@@ -1,11 +1,27 @@
 [package]
 name = "klava"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Лёгкий терминальный тренажёр слепой печати (RU/EN)"
+description = "Лёгкий тренажёр слепой печати (RU/EN): терминал и окно"
+
+[features]
+default = ["tui", "gui"]
+tui = ["dep:crossterm"]
+gui = ["dep:eframe"]
 
 [dependencies]
-crossterm = "0.28"
+crossterm = { version = "0.28", optional = true }
+eframe = { version = "0.37", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+
+[[bin]]
+name = "klava"
+path = "src/bin/klava.rs"
+required-features = ["tui"]
+
+[[bin]]
+name = "klava-gui"
+path = "src/bin/klava-gui.rs"
+required-features = ["gui"]
 
 [profile.release]
 opt-level = "s"
