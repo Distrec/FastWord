@@ -9,7 +9,7 @@ use crossterm::{
     terminal::{self, ClearType},
 };
 
-use klava::*;
+use fastword::*;
 
 const MAX_WIDTH: usize = 70;
 
@@ -102,7 +102,7 @@ fn draw(out: &mut Stdout, lang: Lang, lesson: usize, t: &Test) -> io::Result<()>
         terminal::Clear(ClearType::All),
         at(top),
         SetForegroundColor(Color::DarkGrey),
-        Print("klava  "),
+        Print("FastWord  "),
         SetForegroundColor(Color::Cyan),
         Print(lang.label()),
         SetForegroundColor(Color::Reset),
@@ -269,7 +269,7 @@ fn main() -> io::Result<()> {
             "en" => lang = Lang::En,
             "ru" => lang = Lang::Ru,
             _ => {
-                eprintln!("Использование: klava [ru|en]");
+                eprintln!("Использование: fastword [ru|en]");
                 std::process::exit(2);
             }
         }

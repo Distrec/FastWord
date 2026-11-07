@@ -1,8 +1,8 @@
 [package]
-name = "klava"
+name = "fastword"
 version = "0.2.0"
 edition = "2021"
-description = "Лёгкий тренажёр слепой печати (RU/EN): терминал и окно"
+description = "FastWord — лёгкий тренажёр слепой печати (RU/EN): терминал и окно"
 
 [features]
 default = ["tui", "gui"]
@@ -14,13 +14,13 @@ crossterm = { version = "0.28", optional = true }
 eframe = { version = "0.37", optional = true, default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 
 [[bin]]
-name = "klava"
-path = "src/bin/klava.rs"
+name = "fastword"
+path = "src/bin/fastword.rs"
 required-features = ["tui"]
 
 [[bin]]
-name = "klava-gui"
-path = "src/bin/klava-gui.rs"
+name = "fastword-gui"
+path = "src/bin/fastword-gui.rs"
 required-features = ["gui"]
 
 [profile.release]

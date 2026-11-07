@@ -4,7 +4,7 @@ use eframe::egui::{
     self, text::LayoutJob, Align, Align2, Color32, CornerRadius, FontId, Key, Layout, Pos2, Rect,
     RichText, Sense, Stroke, StrokeKind, TextFormat, Vec2,
 };
-use klava::*;
+use fastword::*;
 
 struct Palette {
     bg: Color32,
@@ -101,7 +101,7 @@ impl App {
     fn header(&self, ui: &mut egui::Ui, w: f32) {
         let info = &self.lang.lessons()[self.lesson];
         ui.horizontal(|ui| {
-            ui.label(RichText::new("klava").color(P.dim).size(15.0));
+            ui.label(RichText::new("FastWord").color(P.dim).size(15.0));
             ui.label(RichText::new("·").color(P.faint).size(15.0));
             ui.label(RichText::new(self.lang.label()).color(P.accent).size(15.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -339,14 +339,14 @@ fn main() -> eframe::Result {
     let (lang, lesson) = load_state();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("klava")
-            .with_app_id("klava-gui")
+            .with_title("FastWord")
+            .with_app_id("fastword-gui")
             .with_inner_size([860.0, 640.0])
             .with_min_inner_size([720.0, 560.0]),
         ..Default::default()
     };
     eframe::run_native(
-        "klava",
+        "FastWord",
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());

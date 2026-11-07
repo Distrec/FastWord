@@ -170,7 +170,7 @@ pub fn state_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("XDG_STATE_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".local/state")))?;
-    Some(base.join("klava").join("state"))
+    Some(base.join("fastword").join("state"))
 }
 
 pub fn load_state() -> (Lang, usize) {
