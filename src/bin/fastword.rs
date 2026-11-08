@@ -22,7 +22,7 @@ fn draw_keyboard(out: &mut Stdout, lang: Lang, lesson: usize, next: Option<char>
     let left = cols.saturating_sub(KB_WIDTH) / 2;
     let hot = next.and_then(|c| locate(lang, c));
     let allowed = lang.allowed(lesson);
-    let new = lang.lessons()[lesson].new;
+    let new = lang.lesson(lesson).new;
     for (r, keys) in lang.rows().iter().enumerate() {
         queue!(out, cursor::MoveTo((left + r) as u16, (row0 + r) as u16))?;
         for (col, key) in keys.chars().enumerate() {
@@ -90,12 +90,21 @@ fn draw(out: &mut Stdout, lang: Lang, lesson: usize, t: &Test) -> io::Result<()>
     let (cols, rows) = terminal::size()?;
     let (cols, rows) = (cols as usize, rows as usize);
     let width = MAX_WIDTH.min(cols.saturating_sub(4)).max(10);
-    let lines = wrap(&t.target, width);
+    let mut lines = wrap(&t.target, width);
+    if t.endless {
+        let cur = lines.iter().position(|&(_, e)| t.typed.len() < e).unwrap_or(0);
+        lines = lines.into_iter().skip(cur.saturating_sub(1)).take(ENDLESS_LINES).collect();
+    }
     let top = rows.saturating_sub(lines.len() + 13) / 2;
     let left = (cols.saturating_sub(width) / 2) as u16;
     let at = |row: usize| cursor::MoveTo(left, row as u16);
 
-    let info = &lang.lessons()[lesson];
+    let info = lang.lesson(lesson);
+    let title = if is_endless(lesson) {
+        format!("  ∞ {}", info.title)
+    } else {
+        format!("  Урок {}/{LESSON_COUNT}: {}", lesson + 1, info.title)
+    };
     let letters: String = info.new.chars().map(|c| format!("{c} ")).collect();
     queue!(
         out,
@@ -106,7 +115,7 @@ fn draw(out: &mut Stdout, lang: Lang, lesson: usize, t: &Test) -> io::Result<()>
         SetForegroundColor(Color::Cyan),
         Print(lang.label()),
         SetForegroundColor(Color::Reset),
-        Print(format!("  Урок {}/{LESSON_COUNT}: {}", lesson + 1, info.title)),
+        Print(title),
     )?;
     if !letters.is_empty() {
         queue!(
@@ -164,6 +173,18 @@ fn draw(out: &mut Stdout, lang: Lang, lesson: usize, t: &Test) -> io::Result<()>
                 queue!(out, Print(" · для перехода к следующему уроку цель — точность от 95%"))?;
             }
         }
+    } else if t.endless && t.paused() {
+        queue!(
+            out,
+            at(status),
+            SetForegroundColor(Color::DarkGrey),
+            Print(format!(
+                "Пауза · слов: {} · {:.0} зн/мин · точность {:.0}% · ↑ — начать заново",
+                t.typed.iter().filter(|&&c| c == ' ').count(),
+                t.cpm(),
+                t.accuracy()
+            )),
+        )?;
     } else if t.started.is_none() {
         queue!(
             out,
@@ -278,7 +299,7 @@ fn main() -> io::Result<()> {
     let mut out = io::stdout();
     let _guard = TermGuard::enter(&mut out)?;
     let mut rng = Rng::new();
-    let mut test = Test::new(make_text(lang, lesson, &mut rng));
+    let mut test = Test::for_mode(lang, lesson, &mut rng);
     let mut dirty = true;
 
     loop {
@@ -295,7 +316,7 @@ fn main() -> io::Result<()> {
                 match action(k, test.done()) {
                     Action::Quit => break,
                     Action::Restart | Action::Next => {
-                        test = Test::new(make_text(lang, lesson, &mut rng));
+                        test = Test::for_mode(lang, lesson, &mut rng);
                     }
                     a @ (Action::ToggleLang | Action::PrevLesson | Action::NextLesson) => {
                         match a {
@@ -304,10 +325,13 @@ fn main() -> io::Result<()> {
                             _ => lesson = cycle_lesson(lesson, true),
                         }
                         save_state(lang, lesson);
-                        test = Test::new(make_text(lang, lesson, &mut rng));
+                        test = Test::for_mode(lang, lesson, &mut rng);
                     }
                     Action::Backspace => test.backspace(),
-                    Action::Type(c) => test.type_char(c, lang),
+                    Action::Type(c) => {
+                        test.type_char(c, lang);
+                        test.top_up(lang, &mut rng);
+                    }
                     Action::None => continue,
                 }
                 dirty = true;

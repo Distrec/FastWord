@@ -3,6 +3,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub const RU_WORDS: &str = include_str!("../words/ru.txt");
 pub const EN_WORDS: &str = include_str!("../words/en.txt");
 pub const WORDS_PER_TEST: usize = 25;
+pub const ENDLESS_AHEAD: usize = 200;
+pub const ENDLESS_LINES: usize = 3;
+pub const ENDLESS_PAUSE: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Lang {
@@ -133,12 +136,20 @@ pub const LESSONS_EN: [Lesson; 7] = [
 ];
 
 pub const LESSON_COUNT: usize = 7;
+pub const ENDLESS: usize = LESSON_COUNT;
+pub const MODE_COUNT: usize = LESSON_COUNT + 1;
+
+pub const ENDLESS_LESSON: Lesson = Lesson { title: "Бесконечный режим", new: "" };
+
+pub fn is_endless(mode: usize) -> bool {
+    mode == ENDLESS
+}
 
 pub fn cycle_lesson(lesson: usize, forward: bool) -> usize {
     if forward {
-        (lesson + 1) % LESSON_COUNT
+        (lesson + 1) % MODE_COUNT
     } else {
-        (lesson + LESSON_COUNT - 1) % LESSON_COUNT
+        (lesson + MODE_COUNT - 1) % MODE_COUNT
     }
 }
 
@@ -157,12 +168,15 @@ impl Lang {
         }
     }
 
+    pub fn lesson(self, mode: usize) -> &'static Lesson {
+        self.lessons().get(mode).unwrap_or(&ENDLESS_LESSON)
+    }
+
     pub fn allowed(self, lesson: usize) -> Option<Vec<char>> {
-        let lessons = self.lessons();
-        if lessons[lesson].new.is_empty() {
+        if self.lesson(lesson).new.is_empty() {
             return None;
         }
-        Some(lessons[..=lesson].iter().flat_map(|l| l.new.chars()).collect())
+        Some(self.lessons()[..=lesson].iter().flat_map(|l| l.new.chars()).collect())
     }
 }
 
@@ -185,7 +199,7 @@ pub fn load_state() -> (Lang, usize) {
     let lesson = parts
         .next()
         .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n < LESSON_COUNT)
+        .filter(|&n| n < MODE_COUNT)
         .unwrap_or(LESSON_COUNT - 1);
     (lang, lesson)
 }
@@ -253,7 +267,7 @@ pub fn pseudo_word(new: &[char], allowed: &[char], rng: &mut Rng) -> String {
 pub fn make_text(lang: Lang, lesson: usize, rng: &mut Rng) -> Vec<char> {
     let dict: Vec<&str> = lang.words().split_whitespace().collect();
     let allowed = lang.allowed(lesson);
-    let new: Vec<char> = lang.lessons()[lesson].new.chars().collect();
+    let new: Vec<char> = lang.lesson(lesson).new.chars().collect();
     let real: Vec<&str> = match &allowed {
         None => dict.clone(),
         Some(a) => dict.iter().copied().filter(|w| w.chars().all(|c| a.contains(&c))).collect(),
@@ -280,9 +294,29 @@ pub struct Test {
     pub keystrokes: usize,
     pub mistakes: usize,
     pub wrong_layout: bool,
+    pub endless: bool,
+    pub last_key: Option<Instant>,
+    pub idle: Duration,
 }
 
 impl Test {
+    pub fn for_mode(lang: Lang, mode: usize, rng: &mut Rng) -> Self {
+        let mut t = Test::new(make_text(lang, mode, rng));
+        t.endless = is_endless(mode);
+        t
+    }
+
+    pub fn top_up(&mut self, lang: Lang, rng: &mut Rng) {
+        if self.endless && self.target.len() - self.typed.len().min(self.target.len()) < ENDLESS_AHEAD {
+            self.target.push(' ');
+            self.target.extend(make_text(lang, ENDLESS, rng));
+        }
+    }
+
+    pub fn paused(&self) -> bool {
+        self.last_key.map_or(true, |k| k.elapsed() >= ENDLESS_PAUSE)
+    }
+
     pub fn new(target: Vec<char>) -> Self {
         Test {
             target,
@@ -292,6 +326,9 @@ impl Test {
             keystrokes: 0,
             mistakes: 0,
             wrong_layout: false,
+            endless: false,
+            last_key: None,
+            idle: Duration::ZERO,
         }
     }
 
@@ -300,11 +337,17 @@ impl Test {
     }
 
     pub fn type_char(&mut self, c: char, lang: Lang) {
-        if self.done() {
+        if self.done() || self.typed.len() >= self.target.len() {
             return;
         }
         let now = Instant::now();
         self.started.get_or_insert(now);
+        if let Some(gap) = self.last_key.map(|k| now - k) {
+            if self.endless && gap > ENDLESS_PAUSE {
+                self.idle += gap;
+            }
+        }
+        self.last_key = Some(now);
         self.keystrokes += 1;
         let ok = c == self.target[self.typed.len()];
         if !ok {
@@ -312,7 +355,7 @@ impl Test {
         }
         self.wrong_layout = !ok && lang.is_foreign(c);
         self.typed.push(c);
-        if self.typed.len() == self.target.len() {
+        if !self.endless && self.typed.len() == self.target.len() {
             self.finished = Some(now);
         }
     }
@@ -325,10 +368,12 @@ impl Test {
     }
 
     pub fn elapsed(&self) -> Duration {
-        match self.started {
-            None => Duration::ZERO,
-            Some(s) => self.finished.unwrap_or_else(Instant::now) - s,
-        }
+        let Some(s) = self.started else { return Duration::ZERO };
+        let end = match (self.endless, self.last_key) {
+            (true, Some(k)) if self.paused() => k,
+            _ => self.finished.unwrap_or_else(Instant::now),
+        };
+        (end - s).saturating_sub(self.idle)
     }
 
     pub fn correct(&self) -> usize {
@@ -419,6 +464,24 @@ mod tests {
         assert_eq!(t.correct(), 2);
         assert_eq!(t.keystrokes, 3);
         assert!((t.accuracy() - 200.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn endless_never_finishes() {
+        let mut rng = Rng(7);
+        let mut t = Test::for_mode(Lang::Ru, ENDLESS, &mut rng);
+        assert!(t.endless);
+        for _ in 0..2000 {
+            let c = t.target[t.typed.len()];
+            t.type_char(c, Lang::Ru);
+            t.top_up(Lang::Ru, &mut rng);
+            assert!(t.target.len() - t.typed.len() >= ENDLESS_AHEAD);
+        }
+        assert!(!t.done());
+        assert_eq!(t.correct(), 2000);
+        assert_eq!(cycle_lesson(LESSON_COUNT - 1, true), ENDLESS);
+        assert_eq!(cycle_lesson(ENDLESS, true), 0);
+        assert_eq!(Lang::En.allowed(ENDLESS), None);
     }
 
     #[test]

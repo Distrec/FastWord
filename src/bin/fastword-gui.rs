@@ -62,12 +62,12 @@ enum Chip {
 impl App {
     fn new(lang: Lang, lesson: usize) -> Self {
         let mut rng = Rng::new();
-        let test = Test::new(make_text(lang, lesson, &mut rng));
+        let test = Test::for_mode(lang, lesson, &mut rng);
         App { lang, lesson, rng, test, content_h: 0.0 }
     }
 
     fn new_test(&mut self) {
-        self.test = Test::new(make_text(self.lang, self.lesson, &mut self.rng));
+        self.test = Test::for_mode(self.lang, self.lesson, &mut self.rng);
     }
 
     fn switch(&mut self) {
@@ -76,7 +76,7 @@ impl App {
     }
 
     fn typing(&self) -> bool {
-        self.test.started.is_some() && !self.test.done()
+        self.test.started.is_some() && !self.test.done() && !(self.test.endless && self.test.paused())
     }
 
     fn handle_input(&mut self, ctx: &egui::Context) {
@@ -86,6 +86,7 @@ impl App {
                 egui::Event::Text(t) => {
                     for c in t.chars().filter(|c| !c.is_control()) {
                         self.test.type_char(c, self.lang);
+                        self.test.top_up(self.lang, &mut self.rng);
                     }
                 }
                 egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } => match key {
@@ -140,7 +141,11 @@ impl App {
         y += 22.0;
 
         let mut chosen = None;
-        for (i, lesson) in self.lang.lessons().iter().enumerate() {
+        for i in 0..MODE_COUNT {
+            let lesson = self.lang.lesson(i);
+            if is_endless(i) {
+                y += 8.0;
+            }
             let row = Rect::from_min_size(Pos2::new(left, y), Vec2::new(MENU_W, 26.0));
             let resp = ui.interact(row, ui.scope_id().with(("lesson", i)), Sense::CLICK);
             let current = i == self.lesson;
@@ -154,7 +159,7 @@ impl App {
             }
             let num_color = if current { P.accent } else { P.dim };
             let text_color = if current || (clickable && resp.hovered()) { P.text } else { P.dim };
-            p.text(row.left_center() + Vec2::new(11.0, 0.0), Align2::LEFT_CENTER, format!("{}", i + 1), FontId::monospace(12.5), fade(num_color));
+            p.text(row.left_center() + Vec2::new(11.0, 0.0), Align2::LEFT_CENTER, if is_endless(i) { "∞".to_string() } else { format!("{}", i + 1) }, FontId::monospace(12.5), fade(num_color));
             p.text(row.left_center() + Vec2::new(24.0, 0.0), Align2::LEFT_CENTER, lesson.title, FontId::proportional(12.0), fade(text_color));
             if clickable && resp.clicked() {
                 chosen = Some(i);
@@ -207,12 +212,20 @@ impl App {
         let frac = t.typed.len() as f32 / t.target.len().max(1) as f32;
         let (r, _) = ui.allocate_exact_size(Vec2::new(w, 24.0), Sense::hover());
         let p = ui.painter();
-        p.text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", frac * 100.0), FontId::proportional(18.0), P.text);
+        let center = if t.endless {
+            format!("∞ · слов: {}", t.typed.iter().filter(|&&c| c == ' ').count())
+        } else {
+            format!("{:.0}%", frac * 100.0)
+        };
+        p.text(r.center(), Align2::CENTER_CENTER, center, FontId::proportional(18.0), P.text);
         p.text(r.right_center(), Align2::RIGHT_CENTER, self.lang.label(), FontId::proportional(13.5), P.accent);
 
         const SEGMENTS: usize = 40;
         const SEG_GAP: f32 = 3.0;
         let (bar, _) = ui.allocate_exact_size(Vec2::new(w, 10.0), Sense::hover());
+        if t.endless {
+            return;
+        }
         let seg_w = (w - SEG_GAP * (SEGMENTS - 1) as f32) / SEGMENTS as f32;
         let filled = (frac * SEGMENTS as f32).round() as usize;
         let p = ui.painter();
@@ -230,11 +243,16 @@ impl App {
         let line_h = 31.0;
         let cw = ui.painter().layout_no_wrap("M".into(), font.clone(), P.text).size().x;
         let per_line = ((w / cw).floor() as usize).max(10);
-        let lines = wrap(&t.target, per_line);
+        let mut lines = wrap(&t.target, per_line);
+        if t.endless {
+            let cur = lines.iter().position(|&(_, e)| t.typed.len() < e).unwrap_or(0);
+            let first = cur.saturating_sub(1);
+            lines = lines.into_iter().skip(first).take(ENDLESS_LINES).collect();
+        }
         let (r, _) = ui.allocate_exact_size(Vec2::new(w, lines.len() as f32 * line_h), Sense::hover());
         let p = ui.painter();
         for (n, &(s, e)) in lines.iter().enumerate() {
-            let last = n + 1 == lines.len();
+            let last = n + 1 == lines.len() && !t.endless;
             let content_end = if !last && t.target[e - 1] == ' ' { e - 1 } else { e };
             let spaces = t.target[s..content_end].iter().filter(|&&c| c == ' ').count();
             let extra = if last || spaces == 0 { 0.0 } else { (w - (content_end - s) as f32 * cw).max(0.0) / spaces as f32 };
@@ -305,6 +323,8 @@ impl App {
             (format!("Готово! Enter — ещё раз{tail}"), P.accent)
         } else if t.started.is_none() {
             ("Начните печатать — таймер запустится с первой клавиши".to_string(), P.dim)
+        } else if t.endless && t.paused() {
+            ("Пауза — продолжайте печатать, ↑ — начать заново".to_string(), P.dim)
         } else {
             (String::new(), P.dim)
         };
@@ -336,7 +356,7 @@ impl App {
         let next = self.test.target.get(self.test.typed.len()).copied();
         let hot = next.and_then(|c| locate(self.lang, c));
         let allowed = self.lang.allowed(self.lesson);
-        let new = self.lang.lessons()[self.lesson].new;
+        let new = self.lang.lesson(self.lesson).new;
         let radius = CornerRadius::same(7);
 
         for (r, keys) in self.lang.rows().iter().enumerate() {
