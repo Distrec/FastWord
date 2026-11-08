@@ -2,6 +2,7 @@
 name = "fastword"
 version = "0.3.4"
 edition = "2021"
+license = "MIT"
 description = "FastWord — лёгкий тренажёр слепой печати (RU/EN): терминал и окно"
 
 [features]

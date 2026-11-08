@@ -74,6 +74,8 @@ cargo build --release
 
 Нашли ошибку или есть идея — откройте [Issue](https://github.com/Distrec/FastWord/issues/new/choose).
 
-## Шрифт
+## Лицензия
+
+Код — [MIT](LICENSE): можно свободно использовать, изменять и распространять, сохранив указание автора.
 
 В программу встроен шрифт FreeMono из [GNU FreeFont](https://www.gnu.org/software/freefont/) (GPL-3.0-or-later с исключением для шрифтов).
