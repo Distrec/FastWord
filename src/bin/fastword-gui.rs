@@ -502,6 +502,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
+            let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "FreeMono".into(),
+                std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/FreeMono.otf"))),
+            );
+            fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "FreeMono".into());
+            cc.egui_ctx.set_fonts(fonts);
             Ok(Box::new(App::new(lang, lesson)))
         }),
     )

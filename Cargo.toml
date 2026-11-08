@@ -1,6 +1,6 @@
 [package]
 name = "fastword"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 description = "FastWord — лёгкий тренажёр слепой печати (RU/EN): терминал и окно"
 
