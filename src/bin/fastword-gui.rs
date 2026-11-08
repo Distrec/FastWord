@@ -49,6 +49,7 @@ const MARGIN: f32 = 20.0;
 struct App {
     lang: Lang,
     lesson: usize,
+    mix: Mix,
     rng: Rng,
     test: Test,
     content_h: f32,
@@ -60,19 +61,26 @@ enum Chip {
 }
 
 impl App {
-    fn new(lang: Lang, lesson: usize) -> Self {
+    fn new(lang: Lang, lesson: usize, mix: Mix) -> Self {
         let mut rng = Rng::new();
-        let test = Test::for_mode(lang, lesson, &mut rng);
-        App { lang, lesson, rng, test, content_h: 0.0 }
+        let test = Test::for_mode_mix(lang, lesson, mix, &mut rng);
+        App { lang, lesson, mix, rng, test, content_h: 0.0 }
     }
 
     fn new_test(&mut self) {
-        self.test = Test::for_mode(self.lang, self.lesson, &mut self.rng);
+        self.test = Test::for_mode_mix(self.lang, self.lesson, self.mix, &mut self.rng);
     }
 
     fn switch(&mut self) {
-        save_state(self.lang, self.lesson);
+        save_state_mix(self.lang, self.lesson, self.mix);
         self.new_test();
+    }
+
+    fn set_mix(&mut self, mix: Mix) {
+        if mix != self.mix {
+            self.mix = mix;
+            self.switch();
+        }
     }
 
     fn typing(&self) -> bool {
@@ -105,6 +113,7 @@ impl App {
                         self.switch();
                     }
                     Key::ArrowUp => self.new_test(),
+                    Key::ArrowDown if is_endless(self.lesson) => self.set_mix(self.mix.toggle()),
                     Key::Enter if self.test.done() => self.new_test(),
                     _ if modifiers.ctrl && (key == Key::R || physical_key == Some(Key::R)) => self.new_test(),
                     _ => {}
@@ -141,6 +150,7 @@ impl App {
         y += 22.0;
 
         let mut chosen = None;
+        let mut new_mix = None;
         for i in 0..MODE_COUNT {
             let lesson = self.lang.lesson(i);
             if is_endless(i) {
@@ -165,6 +175,32 @@ impl App {
                 chosen = Some(i);
             }
             y += 28.0;
+            if is_endless(i) && current {
+                y += 2.0;
+                let w = (MENU_W - 6.0) / 2.0;
+                for (k, mix) in [Mix::Words, Mix::All].into_iter().enumerate() {
+                    let r = Rect::from_min_size(Pos2::new(left + k as f32 * (w + 6.0), y), Vec2::new(w, 24.0));
+                    let resp = ui.interact(r, ui.scope_id().with(("mix", k)), Sense::CLICK);
+                    let on = mix == self.mix;
+                    let p = ui.painter();
+                    let (fill, color) = if on {
+                        (P.accent.gamma_multiply(0.15), P.accent)
+                    } else if clickable && resp.hovered() {
+                        (P.surface, P.text)
+                    } else {
+                        (P.surface, P.dim)
+                    };
+                    p.rect_filled(r, CornerRadius::same(6), fade(fill));
+                    if on {
+                        p.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, fade(P.accent)), StrokeKind::Inside);
+                    }
+                    p.text(r.center(), Align2::CENTER_CENTER, mix.label(), FontId::proportional(12.0), fade(color));
+                    if clickable && resp.clicked() {
+                        new_mix = Some(mix);
+                    }
+                }
+                y += 30.0;
+            }
         }
 
         y += 14.0;
@@ -193,6 +229,9 @@ impl App {
             }
         }
 
+        if let Some(m) = new_mix {
+            self.set_mix(m);
+        }
         if let Some(i) = chosen {
             if i != self.lesson {
                 self.lesson = i;
@@ -401,11 +440,17 @@ impl App {
         let left = Vec2::new(-1.0, 0.0);
         let right = Vec2::new(1.0, 0.0);
         let up = Vec2::new(0.0, -1.0);
+        let down = Vec2::new(0.0, 1.0);
+        let fourth: (&[Chip], &str) = if is_endless(self.lesson) {
+            (&[Chip::Arrow(down)], "слова / всё")
+        } else {
+            (&[Chip::Text("Enter")], "ещё раз")
+        };
         let items: [(&[Chip], &str); 5] = [
             (&[Chip::Arrow(left), Chip::Arrow(right)], "урок"),
             (&[Chip::Arrow(up)], "другие слова"),
             (&[Chip::Text("Tab")], "раскладка"),
-            (&[Chip::Text("Enter")], "ещё раз"),
+            fourth,
             (&[Chip::Text("Esc")], "выход"),
         ];
         let cell = bar.width() / items.len() as f32;
@@ -530,7 +575,7 @@ fn main() -> eframe::Result {
                 fonts.families.entry(family).or_default().insert(0, "FreeMono".into());
             }
             cc.egui_ctx.set_fonts(fonts);
-            Ok(Box::new(App::new(lang, lesson)))
+            Ok(Box::new(App::new(lang, lesson, load_mix())))
         }),
     )
 }

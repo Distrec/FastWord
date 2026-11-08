@@ -141,6 +141,30 @@ pub const MODE_COUNT: usize = LESSON_COUNT + 1;
 
 pub const ENDLESS_LESSON: Lesson = Lesson { title: "Бесконечный режим", new: "" };
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mix {
+    Words,
+    All,
+}
+
+impl Mix {
+    pub fn toggle(self) -> Self {
+        match self {
+            Mix::Words => Mix::All,
+            Mix::All => Mix::Words,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mix::Words => "Слова",
+            Mix::All => "Всё подряд",
+        }
+    }
+}
+
+pub const MIN_WORD: usize = 3;
+
 pub fn is_endless(mode: usize) -> bool {
     mode == ENDLESS
 }
@@ -204,14 +228,29 @@ pub fn load_state() -> (Lang, usize) {
     (lang, lesson)
 }
 
-pub fn save_state(lang: Lang, lesson: usize) {
+pub fn load_mix() -> Mix {
+    let text = state_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    if text.split_whitespace().nth(2) == Some("all") { Mix::All } else { Mix::Words }
+}
+
+fn write_state(lang: Lang, lesson: usize, mix: Option<Mix>) {
     if let Some(p) = state_path() {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        let mix = mix.unwrap_or_else(load_mix);
         let tag = if lang == Lang::En { "en" } else { "ru" };
-        let _ = std::fs::write(p, format!("{tag} {lesson}\n"));
+        let mix_tag = if mix == Mix::All { "all" } else { "words" };
+        let _ = std::fs::write(p, format!("{tag} {lesson} {mix_tag}\n"));
     }
+}
+
+pub fn save_state(lang: Lang, lesson: usize) {
+    write_state(lang, lesson, None);
+}
+
+pub fn save_state_mix(lang: Lang, lesson: usize, mix: Mix) {
+    write_state(lang, lesson, Some(mix));
 }
 
 pub fn locate(lang: Lang, c: char) -> Option<(usize, usize)> {
@@ -286,6 +325,29 @@ pub fn make_text(lang: Lang, lesson: usize, rng: &mut Rng) -> Vec<char> {
     picked.join(" ").chars().collect()
 }
 
+pub fn make_endless(lang: Lang, mix: Mix, rng: &mut Rng) -> Vec<char> {
+    let dict: Vec<&str> = lang.words().split_whitespace().collect();
+    let letters: Vec<char> = lang.lessons().iter().flat_map(|l| l.new.chars()).collect();
+    let mut picked: Vec<String> = Vec::with_capacity(WORDS_PER_TEST);
+    while picked.len() < WORDS_PER_TEST {
+        let w = match mix {
+            Mix::All if rng.below(3) == 0 => pseudo_word(&letters, &letters, rng),
+            Mix::All => dict[rng.below(dict.len())].to_string(),
+            Mix::Words => {
+                let w = dict[rng.below(dict.len())];
+                if w.chars().count() < MIN_WORD {
+                    continue;
+                }
+                w.to_string()
+            }
+        };
+        if picked.last() != Some(&w) {
+            picked.push(w);
+        }
+    }
+    picked.join(" ").chars().collect()
+}
+
 pub struct Test {
     pub target: Vec<char>,
     pub typed: Vec<char>,
@@ -297,6 +359,7 @@ pub struct Test {
     pub endless: bool,
     pub last_key: Option<Instant>,
     pub idle: Duration,
+    pub mix: Option<Mix>,
 }
 
 impl Test {
@@ -306,10 +369,24 @@ impl Test {
         t
     }
 
+    pub fn for_mode_mix(lang: Lang, mode: usize, mix: Mix, rng: &mut Rng) -> Self {
+        if !is_endless(mode) {
+            return Test::for_mode(lang, mode, rng);
+        }
+        let mut t = Test::new(make_endless(lang, mix, rng));
+        t.endless = true;
+        t.mix = Some(mix);
+        t
+    }
+
     pub fn top_up(&mut self, lang: Lang, rng: &mut Rng) {
         if self.endless && self.target.len() - self.typed.len().min(self.target.len()) < ENDLESS_AHEAD {
             self.target.push(' ');
-            self.target.extend(make_text(lang, ENDLESS, rng));
+            let more = match self.mix {
+                Some(mix) => make_endless(lang, mix, rng),
+                None => make_text(lang, ENDLESS, rng),
+            };
+            self.target.extend(more);
         }
     }
 
@@ -329,6 +406,7 @@ impl Test {
             endless: false,
             last_key: None,
             idle: Duration::ZERO,
+            mix: None,
         }
     }
 
@@ -482,6 +560,25 @@ mod tests {
         assert_eq!(cycle_lesson(LESSON_COUNT - 1, true), ENDLESS);
         assert_eq!(cycle_lesson(ENDLESS, true), 0);
         assert_eq!(Lang::En.allowed(ENDLESS), None);
+    }
+
+    #[test]
+    fn endless_mix() {
+        let mut rng = Rng(7);
+        for lang in [Lang::Ru, Lang::En] {
+            let mut t = Test::for_mode_mix(lang, ENDLESS, Mix::Words, &mut rng);
+            for _ in 0..2000 {
+                t.type_char('x', lang);
+                t.top_up(lang, &mut rng);
+            }
+            let text: String = t.target.iter().collect();
+            let dict: Vec<&str> = lang.words().split_whitespace().collect();
+            for w in text.split(' ') {
+                assert!(w.chars().count() >= MIN_WORD && dict.contains(&w), "{w}");
+            }
+            let all: String = make_endless(lang, Mix::All, &mut rng).into_iter().collect();
+            assert!(all.split(' ').all(|w| !w.is_empty() && w.chars().all(|c| finger_of(lang, c).is_some())));
+        }
     }
 
     #[test]
