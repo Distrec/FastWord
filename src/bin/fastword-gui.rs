@@ -444,9 +444,24 @@ impl App {
     }
 }
 
+const BASE_W: f32 = 980.0;
+const BASE_H: f32 = 580.0;
+const COLUMN_MAX: f32 = 860.0;
+
+fn fit_zoom(ctx: &egui::Context) {
+    let zoom = ctx.zoom_factor();
+    let size = ctx.content_rect().size() * zoom;
+    let target = (size.x / BASE_W).min(size.y / BASE_H).clamp(0.75, 3.0);
+    if (target - zoom).abs() > 0.01 {
+        ctx.set_zoom_factor(target);
+        ctx.request_repaint();
+    }
+}
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        fit_zoom(&ctx);
         self.handle_input(&ctx);
         if self.typing() {
             ctx.request_repaint_after(Duration::from_millis(200));
@@ -462,7 +477,8 @@ impl eframe::App for App {
                 Pos2::new(full.left(), full.top() + TOP_BAR),
                 Pos2::new(full.right(), full.bottom() - FOOTER),
             );
-            let w = COLUMN.min(area.width() - 2.0 * MARGIN);
+            let side = 2.0 * (MENU_W + 2.0 * MARGIN);
+            let w = (area.width() - side).clamp(COLUMN, COLUMN_MAX).min(area.width() - 2.0 * MARGIN);
             let top = area.top() + ((area.height() - self.content_h) / 2.0).max(0.0);
             let col = Rect::from_min_size(Pos2::new(area.center().x - w / 2.0, top), Vec2::new(w, area.bottom() - top));
             let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
