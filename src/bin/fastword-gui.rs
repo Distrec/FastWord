@@ -203,69 +203,71 @@ impl App {
     }
 
     fn lesson_line(&self, ui: &mut egui::Ui, w: f32) {
-        let info = &self.lang.lessons()[self.lesson];
-        let (r, _) = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::hover());
+        let t = &self.test;
+        let frac = t.typed.len() as f32 / t.target.len().max(1) as f32;
+        let (r, _) = ui.allocate_exact_size(Vec2::new(w, 24.0), Sense::hover());
         let p = ui.painter();
-        let mut job = LayoutJob::default();
-        let font = FontId::proportional(13.5);
-        let fmt = |color| TextFormat { font_id: font.clone(), color, ..Default::default() };
-        job.append(&format!("Урок {} · ", self.lesson + 1), 0.0, fmt(P.dim));
-        job.append(info.title, 0.0, fmt(P.text));
-        if !info.new.is_empty() {
-            let label = if self.lesson == 0 { "   буквы " } else { "   новые " };
-            job.append(label, 0.0, fmt(P.dim));
-            let letters: Vec<String> = info.new.chars().map(String::from).collect();
-            job.append(&letters.join(" "), 0.0, fmt(P.accent));
-        }
-        let galley = p.layout_job(job);
-        p.galley(Pos2::new(r.left(), r.center().y - galley.size().y / 2.0), galley, P.text);
+        p.text(r.center(), Align2::CENTER_CENTER, format!("{:.0}%", frac * 100.0), FontId::proportional(18.0), P.text);
         p.text(r.right_center(), Align2::RIGHT_CENTER, self.lang.label(), FontId::proportional(13.5), P.accent);
-        let (line, _) = ui.allocate_exact_size(Vec2::new(w, 8.0), Sense::hover());
-        ui.painter().hline(line.x_range(), line.center().y, Stroke::new(1.0, P.faint));
+
+        const SEGMENTS: usize = 40;
+        const SEG_GAP: f32 = 3.0;
+        let (bar, _) = ui.allocate_exact_size(Vec2::new(w, 10.0), Sense::hover());
+        let seg_w = (w - SEG_GAP * (SEGMENTS - 1) as f32) / SEGMENTS as f32;
+        let filled = (frac * SEGMENTS as f32).round() as usize;
+        let p = ui.painter();
+        for i in 0..SEGMENTS {
+            let x = bar.left() + i as f32 * (seg_w + SEG_GAP);
+            let seg = Rect::from_min_size(Pos2::new(x, bar.top()), Vec2::new(seg_w, bar.height()));
+            let color = if i < filled { P.text } else { P.faint };
+            p.rect_filled(seg, CornerRadius::same(1), color);
+        }
     }
 
     fn text(&self, ui: &mut egui::Ui, w: f32) {
         let t = &self.test;
-        let mut job = LayoutJob::default();
-        job.wrap.max_width = w;
-        for (i, &c) in t.target.iter().enumerate() {
-            let mut fmt = TextFormat {
-                font_id: FontId::monospace(20.0),
-                color: P.dim,
-                line_height: Some(31.0),
-                ..Default::default()
-            };
-            let mut shown = c;
-            if i < t.typed.len() {
-                if t.typed[i] == c {
-                    fmt.color = P.text;
-                } else {
-                    fmt.color = P.error;
-                    fmt.underline = Stroke::new(2.0, P.error);
-                    if c == ' ' {
-                        shown = '·';
-                    }
-                }
-            } else if i == t.typed.len() {
-                fmt.color = P.bg;
-                fmt.background = P.accent;
-            }
-            job.append(&shown.to_string(), 0.0, fmt);
-        }
-        ui.label(job);
-    }
-
-    fn progress(&self, ui: &mut egui::Ui, w: f32) {
-        let t = &self.test;
-        let frac = t.typed.len() as f32 / t.target.len().max(1) as f32;
-        let (r, _) = ui.allocate_exact_size(Vec2::new(w, 16.0), Sense::hover());
-        let bar = Rect::from_min_max(Pos2::new(r.left(), r.center().y - 2.0), Pos2::new(r.right() - 46.0, r.center().y + 2.0));
+        let font = FontId::monospace(20.0);
+        let line_h = 31.0;
+        let cw = ui.painter().layout_no_wrap("M".into(), font.clone(), P.text).size().x;
+        let per_line = ((w / cw).floor() as usize).max(10);
+        let lines = wrap(&t.target, per_line);
+        let (r, _) = ui.allocate_exact_size(Vec2::new(w, lines.len() as f32 * line_h), Sense::hover());
         let p = ui.painter();
-        p.rect_filled(bar, CornerRadius::same(2), P.faint);
-        let mut done = bar;
-        done.set_width(bar.width() * frac);
-        p.rect_filled(done, CornerRadius::same(2), P.accent);
-        p.text(r.right_center(), Align2::RIGHT_CENTER, format!("{:.0}%", frac * 100.0), FontId::proportional(12.5), P.dim);
+        for (n, &(s, e)) in lines.iter().enumerate() {
+            let last = n + 1 == lines.len();
+            let content_end = if !last && t.target[e - 1] == ' ' { e - 1 } else { e };
+            let spaces = t.target[s..content_end].iter().filter(|&&c| c == ' ').count();
+            let extra = if last || spaces == 0 { 0.0 } else { (w - (content_end - s) as f32 * cw).max(0.0) / spaces as f32 };
+            let y = r.top() + n as f32 * line_h;
+            let mut x = r.left();
+            for i in s..e {
+                let c = t.target[i];
+                let cell_w = if c == ' ' && i < content_end { cw + extra } else { cw };
+                let cell = Rect::from_min_size(Pos2::new(x, y), Vec2::new(cell_w, line_h));
+                let mut color = P.dim;
+                let mut shown = c;
+                if i < t.typed.len() {
+                    if t.typed[i] == c {
+                        color = P.text;
+                    } else {
+                        color = P.error;
+                        if c == ' ' {
+                            shown = '·';
+                        }
+                        let uy = cell.bottom() - 4.0;
+                        p.hline(cell.left()..=cell.right(), uy, Stroke::new(2.0, P.error));
+                    }
+                } else if i == t.typed.len() {
+                    color = P.bg;
+                    let cursor = Rect::from_min_size(Pos2::new(x, y + 2.0), Vec2::new(cw, line_h - 4.0));
+                    p.rect_filled(cursor, CornerRadius::ZERO, P.accent);
+                }
+                if shown != ' ' {
+                    p.text(Pos2::new(x, cell.center().y), Align2::LEFT_CENTER, shown, font.clone(), color);
+                }
+                x += cell_w;
+            }
+        }
     }
 
     fn stats(&self, ui: &mut egui::Ui) {
@@ -450,8 +452,6 @@ impl eframe::App for App {
                 ui.add_space(12.0);
                 self.text(ui, w);
                 ui.add_space(12.0);
-                self.progress(ui, w);
-                ui.add_space(4.0);
                 self.stats(ui);
                 self.message(ui);
                 ui.add_space(4.0);
