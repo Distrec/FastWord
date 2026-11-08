@@ -51,7 +51,6 @@ struct App {
     lesson: usize,
     rng: Rng,
     test: Test,
-    menu_open: bool,
     content_h: f32,
 }
 
@@ -64,7 +63,7 @@ impl App {
     fn new(lang: Lang, lesson: usize) -> Self {
         let mut rng = Rng::new();
         let test = Test::new(make_text(lang, lesson, &mut rng));
-        App { lang, lesson, rng, test, menu_open: true, content_h: 0.0 }
+        App { lang, lesson, rng, test, content_h: 0.0 }
     }
 
     fn new_test(&mut self) {
@@ -114,32 +113,18 @@ impl App {
         }
     }
 
-    fn burger(&mut self, ui: &mut egui::Ui, full: Rect) {
-        let r = Rect::from_min_size(full.min + Vec2::new(MARGIN, 18.0), Vec2::splat(22.0));
-        let resp = ui.interact(r, ui.scope_id().with("burger"), Sense::CLICK);
-        if resp.clicked() {
-            self.menu_open = !self.menu_open;
-        }
-        let color = if resp.hovered() || (self.menu_open && !self.typing()) { P.text } else { P.dim };
-        let p = ui.painter();
-        for (i, len) in [16.0, 12.0, 16.0].into_iter().enumerate() {
-            let y = r.top() + 5.0 + i as f32 * 6.0;
-            p.line_segment([Pos2::new(r.left() + 3.0, y), Pos2::new(r.left() + 3.0 + len, y)], Stroke::new(2.0, color));
-        }
-    }
-
     fn logo(&self, ui: &egui::Ui, full: Rect) {
         let p = ui.painter();
-        let font = FontId::proportional(18.0);
-        let word = p.layout_no_wrap("Word".into(), font.clone(), P.accent);
-        let fast = p.layout_no_wrap("Fast".into(), font, P.text);
         let cy = full.top() + 29.0;
-        let mut x = full.right() - MARGIN - word.size().x;
-        p.galley(Pos2::new(x, cy - word.size().y / 2.0), word, P.accent);
-        x -= fast.size().x;
-        p.galley(Pos2::new(x, cy - fast.size().y / 2.0), fast, P.text);
+        let x0 = full.left() + MARGIN;
 
-        let cap = Rect::from_center_size(Pos2::new(x - 10.0 - 13.0, cy), Vec2::splat(26.0));
+        for (i, len) in [10.0, 14.0, 8.0].into_iter().enumerate() {
+            let y = cy - 6.0 + i as f32 * 6.0;
+            let end = x0 + 14.0;
+            p.line_segment([Pos2::new(end - len, y), Pos2::new(end, y)], Stroke::new(1.5, P.dim));
+        }
+
+        let cap = Rect::from_center_size(Pos2::new(x0 + 14.0 + 5.0 + 13.0, cy), Vec2::splat(26.0));
         p.rect_filled(cap, CornerRadius::same(6), P.accent.gamma_multiply(0.12));
         p.rect_stroke(cap, CornerRadius::same(6), Stroke::new(1.5, P.accent), StrokeKind::Inside);
         p.line_segment(
@@ -148,22 +133,24 @@ impl App {
         );
         p.text(cap.center() - Vec2::new(0.0, 1.0), Align2::CENTER_CENTER, "F", FontId::monospace(15.0), P.accent);
 
-        for (i, len) in [10.0, 14.0, 8.0].into_iter().enumerate() {
-            let y = cy - 6.0 + i as f32 * 6.0;
-            let end = cap.left() - 5.0;
-            p.line_segment([Pos2::new(end - len, y), Pos2::new(end, y)], Stroke::new(1.5, P.dim));
-        }
+        let font = FontId::proportional(18.0);
+        let fast = p.layout_no_wrap("Fast".into(), font.clone(), P.text);
+        let word = p.layout_no_wrap("Word".into(), font, P.accent);
+        let mut x = cap.right() + 10.0;
+        p.galley(Pos2::new(x, cy - fast.size().y / 2.0), fast.clone(), P.text);
+        x += fast.size().x;
+        p.galley(Pos2::new(x, cy - word.size().y / 2.0), word, P.accent);
     }
 
     fn menu(&mut self, ui: &mut egui::Ui, full: Rect) {
-        let visible = self.menu_open && !self.typing();
+        let visible = !self.typing();
         let t = ui.ctx().animate_bool_with_time(ui.scope_id().with("menu"), visible, 0.18);
         if t <= 0.0 {
             return;
         }
         let fade = |c: Color32| c.gamma_multiply(t);
-        let left = full.left() + 14.0 - (1.0 - t) * 16.0;
-        let mut y = full.top() + TOP_BAR + 8.0;
+        let left = full.left() + MARGIN - (1.0 - t) * 16.0;
+        let mut y = full.top() + 54.0;
         let clickable = t > 0.6;
 
         ui.painter().text(Pos2::new(left, y), Align2::LEFT_TOP, "УРОКИ", FontId::proportional(11.0), fade(P.dim));
@@ -463,7 +450,6 @@ impl eframe::App for App {
         let frame = egui::Frame::NONE.fill(P.bg);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             let full = ui.max_rect();
-            self.burger(ui, full);
             self.logo(ui, full);
             self.footer(ui, full);
 
