@@ -43,7 +43,7 @@ const KEY: f32 = 34.0;
 const GAP: f32 = 6.0;
 const TOP_BAR: f32 = 56.0;
 const FOOTER: f32 = 44.0;
-const MENU_W: f32 = 168.0;
+const MENU_W: f32 = 172.0;
 const MARGIN: f32 = 20.0;
 
 struct App {
@@ -116,27 +116,10 @@ impl App {
     fn logo(&self, ui: &egui::Ui, full: Rect) {
         let p = ui.painter();
         let cy = full.top() + 29.0;
-        let x0 = full.left() + MARGIN;
-
-        for (i, len) in [10.0, 14.0, 8.0].into_iter().enumerate() {
-            let y = cy - 6.0 + i as f32 * 6.0;
-            let end = x0 + 14.0;
-            p.line_segment([Pos2::new(end - len, y), Pos2::new(end, y)], Stroke::new(1.5, P.dim));
-        }
-
-        let cap = Rect::from_center_size(Pos2::new(x0 + 14.0 + 5.0 + 13.0, cy), Vec2::splat(26.0));
-        p.rect_filled(cap, CornerRadius::same(6), P.accent.gamma_multiply(0.12));
-        p.rect_stroke(cap, CornerRadius::same(6), Stroke::new(1.5, P.accent), StrokeKind::Inside);
-        p.line_segment(
-            [Pos2::new(cap.left() + 5.0, cap.bottom() - 1.5), Pos2::new(cap.right() - 5.0, cap.bottom() - 1.5)],
-            Stroke::new(2.0, P.accent),
-        );
-        p.text(cap.center() - Vec2::new(0.0, 1.0), Align2::CENTER_CENTER, "F", FontId::monospace(15.0), P.accent);
-
         let font = FontId::proportional(18.0);
         let fast = p.layout_no_wrap("Fast".into(), font.clone(), P.text);
         let word = p.layout_no_wrap("Word".into(), font, P.accent);
-        let mut x = cap.right() + 10.0;
+        let mut x = full.left() + MARGIN;
         p.galley(Pos2::new(x, cy - fast.size().y / 2.0), fast.clone(), P.text);
         x += fast.size().x;
         p.galley(Pos2::new(x, cy - word.size().y / 2.0), word, P.accent);
@@ -172,7 +155,7 @@ impl App {
             let num_color = if current { P.accent } else { P.dim };
             let text_color = if current || (clickable && resp.hovered()) { P.text } else { P.dim };
             p.text(row.left_center() + Vec2::new(11.0, 0.0), Align2::LEFT_CENTER, format!("{}", i + 1), FontId::monospace(12.5), fade(num_color));
-            p.text(row.left_center() + Vec2::new(26.0, 0.0), Align2::LEFT_CENTER, lesson.title, FontId::proportional(13.0), fade(text_color));
+            p.text(row.left_center() + Vec2::new(24.0, 0.0), Align2::LEFT_CENTER, lesson.title, FontId::proportional(12.0), fade(text_color));
             if clickable && resp.clicked() {
                 chosen = Some(i);
             }
@@ -247,9 +230,9 @@ impl App {
         job.wrap.max_width = w;
         for (i, &c) in t.target.iter().enumerate() {
             let mut fmt = TextFormat {
-                font_id: FontId::monospace(22.0),
+                font_id: FontId::monospace(20.0),
                 color: P.dim,
-                line_height: Some(34.0),
+                line_height: Some(31.0),
                 ..Default::default()
             };
             let mut shown = c;
@@ -507,7 +490,9 @@ fn main() -> eframe::Result {
                 "FreeMono".into(),
                 std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/FreeMono.otf"))),
             );
-            fonts.families.entry(egui::FontFamily::Monospace).or_default().insert(0, "FreeMono".into());
+            for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+                fonts.families.entry(family).or_default().insert(0, "FreeMono".into());
+            }
             cc.egui_ctx.set_fonts(fonts);
             Ok(Box::new(App::new(lang, lesson)))
         }),
