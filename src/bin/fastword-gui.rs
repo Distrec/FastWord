@@ -479,6 +479,7 @@ impl App {
         section(&p, list.left(), list.right(), list.top(), label, P.dim, P.line);
         let mut clicked = None;
         let mut y = list.top() + 30.0;
+        let mut size_row: Option<Rect> = None;
         let rows: Vec<(String, String)> = if self.tab == 0 {
             self.lang
                 .pairs()
@@ -514,17 +515,7 @@ impl App {
             p.text(Pos2::new(list.left(), y - 6.0), Align2::LEFT_TOP, "Шрифт", FontId::proportional(15.0), P.text);
             y += 26.0;
             let current = self.fonts.iter().find(|(n, _)| *n == self.font_name).map_or(BUILTIN_FONT.to_string(), |(n, _)| n.clone());
-            let size_row = Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width(), 36.0));
-            for (k, sign) in ["−", "+"].into_iter().enumerate() {
-                let r = Rect::from_min_size(Pos2::new(size_row.right() - 26.0 - (1 - k) as f32 * 92.0, size_row.center().y - 12.0), Vec2::new(26.0, 24.0));
-                let resp = ui.interact(r, ui.scope_id().with(("size", k)), Sense::CLICK);
-                p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, if resp.hovered() { P.text } else { P.line }), StrokeKind::Inside);
-                p.text(r.center(), Align2::CENTER_CENTER, sign, FontId::monospace(14.0), P.text);
-                if resp.clicked() {
-                    self.pick = 0;
-                    self.setting(0, if k == 0 { -1 } else { 1 });
-                }
-            }
+            size_row = Some(Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width(), 36.0)));
             let preview_y = y + 36.0 * SETTINGS_ROWS as f32 + 18.0;
             p.text(Pos2::new(list.left(), preview_y), Align2::LEFT_TOP, "ПРИМЕР", FontId::monospace(10.5), P.dim);
             let sample = if self.lang == Lang::Ru { "Съешь же ещё этих мягких булок." } else { "The quick brown fox jumps." };
@@ -560,6 +551,21 @@ impl App {
                 clicked = Some(i);
             }
             y += 36.0;
+        }
+        if let Some(size_row) = size_row {
+            if clicked == Some(0) {
+                clicked = None;
+            }
+            for (k, sign) in ["−", "+"].into_iter().enumerate() {
+                let r = Rect::from_min_size(Pos2::new(size_row.right() - 26.0 - (1 - k) as f32 * 92.0, size_row.center().y - 12.0), Vec2::new(26.0, 24.0));
+                let resp = ui.interact(r, ui.scope_id().with(("size", k)), Sense::CLICK);
+                p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, if resp.hovered() { P.text } else { P.line }), StrokeKind::Inside);
+                p.text(r.center(), Align2::CENTER_CENTER, sign, FontId::monospace(14.0), P.text);
+                if resp.clicked() {
+                    self.pick = 0;
+                    self.setting(0, if k == 0 { -1 } else { 1 });
+                }
+            }
         }
         if self.picks() > 0 {
             let hint = match self.tab {
