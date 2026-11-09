@@ -18,7 +18,8 @@ struct Palette {
     sub: Color32,
     error: Color32,
     warn: Color32,
-    fingers: [Color32; 5],
+    line: Color32,
+    hatch: Color32,
 }
 
 const P: Palette = Palette {
@@ -31,14 +32,67 @@ const P: Palette = Palette {
     sub: Color32::from_rgb(0x9c, 0x9c, 0x9c),
     error: Color32::from_rgb(0xe0, 0x6c, 0x75),
     warn: Color32::from_rgb(0xe5, 0xc0, 0x7b),
-    fingers: [
-        Color32::from_rgb(0xc6, 0x78, 0xdd),
-        Color32::from_rgb(0x61, 0xaf, 0xef),
-        Color32::from_rgb(0x98, 0xc3, 0x79),
-        Color32::from_rgb(0xe5, 0xc0, 0x7b),
-        Color32::from_rgb(0x56, 0xb6, 0xc2),
-    ],
+    line: Color32::from_rgb(0x48, 0x48, 0x48),
+    hatch: Color32::from_rgb(0x38, 0x38, 0x38),
 };
+
+fn section(p: &egui::Painter, left: f32, right: f32, y: f32, label: &str, color: Color32, line: Color32) -> f32 {
+    let g = p.layout_no_wrap(label.to_string(), FontId::monospace(10.5), color);
+    let h = g.size().y;
+    let end = left + g.size().x;
+    p.galley(Pos2::new(left, y), g, color);
+    if right > end + 8.0 {
+        p.hline((end + 8.0)..=right, y + h / 2.0, Stroke::new(1.0, line));
+    }
+    end
+}
+
+fn hatch(p: &egui::Painter, r: Rect, group: usize, color: Color32) {
+    let p = p.with_clip_rect(r);
+    let s = Stroke::new(1.0, color);
+    let (w, h) = (r.width(), r.height());
+    match group {
+        0 => {
+            let mut d = -h;
+            while d < w {
+                p.line_segment([Pos2::new(r.left() + d, r.bottom()), Pos2::new(r.left() + d + h, r.top())], s);
+                d += 4.0;
+            }
+        }
+        1 => {
+            let mut y = r.top() + 3.0;
+            while y < r.bottom() {
+                let mut x = r.left() + 3.0;
+                while x < r.right() {
+                    p.circle_filled(Pos2::new(x, y), 0.9, color);
+                    x += 5.0;
+                }
+                y += 5.0;
+            }
+        }
+        2 => {
+            let mut y = r.top() + 2.5;
+            while y < r.bottom() {
+                p.hline(r.x_range(), y, s);
+                y += 4.0;
+            }
+        }
+        3 => {
+            let mut d = -h;
+            while d < w {
+                p.line_segment([Pos2::new(r.left() + d, r.top()), Pos2::new(r.left() + d + h, r.bottom())], s);
+                d += 6.0;
+            }
+        }
+        _ => {
+            let mut x = r.left() + 2.5;
+            while x < r.right() {
+                p.vline(x, r.y_range(), s);
+                x += 4.0;
+            }
+        }
+    }
+}
 
 const COLUMN: f32 = 580.0;
 const KEY: f32 = 34.0;
@@ -148,7 +202,7 @@ impl App {
         let mut y = full.top() + 54.0;
         let clickable = t > 0.6;
 
-        ui.painter().text(Pos2::new(left, y), Align2::LEFT_TOP, "УРОКИ", FontId::proportional(11.0), fade(P.dim));
+        section(ui.painter(), left, left + MENU_W, y, "LESSONS", fade(P.dim), fade(P.line));
         y += 22.0;
 
         let mut chosen = None;
@@ -163,16 +217,13 @@ impl App {
             let current = i == self.lesson;
             let p = ui.painter();
             if current {
-                p.rect_filled(row, CornerRadius::same(6), fade(P.surface));
                 let bar = Rect::from_min_size(row.min + Vec2::new(0.0, 6.0), Vec2::new(3.0, 14.0));
-                p.rect_filled(bar, CornerRadius::same(2), fade(P.accent));
-            } else if clickable && resp.hovered() {
-                p.rect_filled(row, CornerRadius::same(6), fade(P.surface.gamma_multiply(0.6)));
+                p.rect_filled(bar, CornerRadius::ZERO, fade(P.accent));
             }
-            let num_color = if current { P.accent } else { P.dim };
+            let num_color = if current { P.text } else { P.faint };
             let text_color = if current || (clickable && resp.hovered()) { P.text } else { P.dim };
-            p.text(row.left_center() + Vec2::new(11.0, 0.0), Align2::LEFT_CENTER, if is_endless(i) { "∞".to_string() } else { format!("{}", i + 1) }, FontId::monospace(12.5), fade(num_color));
-            p.text(row.left_center() + Vec2::new(24.0, 0.0), Align2::LEFT_CENTER, lesson.title, FontId::proportional(12.0), fade(text_color));
+            p.text(row.left_center() + Vec2::new(11.0, 0.0), Align2::LEFT_CENTER, if is_endless(i) { "∞".to_string() } else { format!("{:02}", i + 1) }, FontId::monospace(12.0), fade(num_color));
+            p.text(row.left_center() + Vec2::new(30.0, 0.0), Align2::LEFT_CENTER, lesson.title, FontId::proportional(12.0), fade(text_color));
             if clickable && resp.clicked() {
                 chosen = Some(i);
             }
@@ -185,17 +236,9 @@ impl App {
                     let resp = ui.interact(r, ui.scope_id().with(("mix", k)), Sense::CLICK);
                     let on = mix == self.mix;
                     let p = ui.painter();
-                    let (fill, color) = if on {
-                        (P.accent.gamma_multiply(0.15), P.accent)
-                    } else if clickable && resp.hovered() {
-                        (P.surface, P.text)
-                    } else {
-                        (P.surface, P.dim)
-                    };
-                    p.rect_filled(r, CornerRadius::same(6), fade(fill));
-                    if on {
-                        p.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, fade(P.accent)), StrokeKind::Inside);
-                    }
+                    let color = if on || (clickable && resp.hovered()) { P.text } else { P.dim };
+                    let border = if on { P.text } else { P.line };
+                    p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, fade(border)), StrokeKind::Inside);
                     p.text(r.center(), Align2::CENTER_CENTER, mix.label(), FontId::proportional(12.0), fade(color));
                     if clickable && resp.clicked() {
                         new_mix = Some(mix);
@@ -206,7 +249,7 @@ impl App {
         }
 
         y += 14.0;
-        ui.painter().text(Pos2::new(left, y), Align2::LEFT_TOP, "РАСКЛАДКА", FontId::proportional(11.0), fade(P.dim));
+        section(ui.painter(), left, left + MENU_W, y, "LAYOUT", fade(P.dim), fade(P.line));
         y += 20.0;
         let mut new_lang = None;
         for (i, lang) in [Lang::Ru, Lang::En].into_iter().enumerate() {
@@ -214,17 +257,9 @@ impl App {
             let resp = ui.interact(r, ui.scope_id().with(("lang", i)), Sense::CLICK);
             let current = lang == self.lang;
             let p = ui.painter();
-            let (fill, color) = if current {
-                (P.accent.gamma_multiply(0.15), P.accent)
-            } else if clickable && resp.hovered() {
-                (P.surface, P.text)
-            } else {
-                (P.surface, P.dim)
-            };
-            p.rect_filled(r, CornerRadius::same(6), fade(fill));
-            if current {
-                p.rect_stroke(r, CornerRadius::same(6), Stroke::new(1.0, fade(P.accent)), StrokeKind::Inside);
-            }
+            let color = if current || (clickable && resp.hovered()) { P.text } else { P.dim };
+            let border = if current { P.text } else { P.line };
+            p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, fade(border)), StrokeKind::Inside);
             p.text(r.center(), Align2::CENTER_CENTER, lang.label(), FontId::proportional(13.0), fade(color));
             if clickable && resp.clicked() {
                 new_lang = Some(lang);
@@ -253,13 +288,19 @@ impl App {
         let frac = t.typed.len() as f32 / t.target.len().max(1) as f32;
         let (r, _) = ui.allocate_exact_size(Vec2::new(w, 24.0), Sense::hover());
         let p = ui.painter();
-        let center = if t.endless {
-            format!("∞ · слов: {}", t.typed.iter().filter(|&&c| c == ' ').count())
+        let value = if t.endless {
+            format!("{} СЛОВ", t.typed.iter().filter(|&&c| c == ' ').count())
         } else {
             format!("{:.0}%", frac * 100.0)
         };
-        p.text(r.center(), Align2::CENTER_CENTER, center, FontId::proportional(18.0), P.text);
-        p.text(r.right_center(), Align2::RIGHT_CENTER, self.lang.label(), FontId::proportional(13.5), P.accent);
+        let lang = p.layout_no_wrap(self.lang.label().to_string(), FontId::monospace(12.0), P.text);
+        let lang_w = lang.size().x;
+        p.galley(Pos2::new(r.right() - lang_w, r.center().y - lang.size().y / 2.0), lang, P.text);
+        let val = p.layout_no_wrap(value, FontId::monospace(16.0), P.text);
+        let val_x = r.right() - lang_w - 16.0 - val.size().x;
+        p.galley(Pos2::new(val_x, r.center().y - val.size().y / 2.0), val, P.text);
+        let label = if t.endless { "ENDLESS" } else { "PROGRESS" };
+        section(p, r.left(), val_x - 10.0, r.center().y - 7.0, label, P.dim, P.line);
 
         const SEGMENTS: usize = 40;
         const SEG_GAP: f32 = 3.0;
@@ -274,7 +315,7 @@ impl App {
             let x = bar.left() + i as f32 * (seg_w + SEG_GAP);
             let seg = Rect::from_min_size(Pos2::new(x, bar.top()), Vec2::new(seg_w, bar.height()));
             let color = if i < filled { P.text } else { P.faint };
-            p.rect_filled(seg, CornerRadius::same(1), color);
+            p.rect_filled(seg, CornerRadius::ZERO, color);
         }
     }
 
@@ -333,19 +374,19 @@ impl App {
         let t = &self.test;
         let secs = t.elapsed().as_secs();
         let items = [
-            (format!("{:.0}", t.cpm()), "зн/мин"),
-            (format!("{:.0}", t.cpm() / 5.0), "сл/мин"),
-            (format!("{:.0}%", t.accuracy()), "точность"),
-            (format!("{}:{:02}", secs / 60, secs % 60), "время"),
+            (format!("{:.0}", t.cpm()), "ЗН/МИН"),
+            (format!("{:.0}", t.cpm() / 5.0), "СЛ/МИН"),
+            (format!("{:.0}%", t.accuracy()), "ТОЧН"),
+            (format!("{}:{:02}", secs / 60, secs % 60), "ВРЕМЯ"),
         ];
-        let value_color = if t.done() { P.accent } else { P.text };
-        let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 46.0), Sense::hover());
-        let cell = r.width() / items.len() as f32;
+        let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
         let p = ui.painter();
+        section(p, r.left(), r.right(), r.top(), "STATS", P.dim, P.line);
+        let cell = r.width() / items.len() as f32;
         for (i, (value, label)) in items.into_iter().enumerate() {
-            let cx = r.left() + cell * (i as f32 + 0.5);
-            p.text(Pos2::new(cx, r.top() + 14.0), Align2::CENTER_CENTER, value, FontId::proportional(24.0), value_color);
-            p.text(Pos2::new(cx, r.top() + 38.0), Align2::CENTER_CENTER, label, FontId::proportional(11.5), P.dim);
+            let x = r.left() + cell * i as f32;
+            p.text(Pos2::new(x, r.top() + 22.0), Align2::LEFT_TOP, value, FontId::monospace(24.0), P.text);
+            p.text(Pos2::new(x, r.top() + 54.0), Align2::LEFT_TOP, label, FontId::monospace(10.5), P.dim);
         }
     }
 
@@ -361,7 +402,7 @@ impl App {
             } else {
                 " · цель для следующего урока — точность от 95%"
             };
-            (format!("Готово! Enter — ещё раз{tail}"), P.accent)
+            (format!("Готово! Enter — ещё раз{tail}"), P.text)
         } else if t.started.is_none() {
             ("Начните печатать — таймер запустится с первой клавиши".to_string(), P.dim)
         } else if t.endless && t.paused() {
@@ -381,10 +422,16 @@ impl App {
         let mut job = LayoutJob::default();
         let font = FontId::proportional(16.0);
         job.append(&key, 0.0, TextFormat { font_id: font.clone(), color: P.dim, ..Default::default() });
-        job.append(f.name(), 0.0, TextFormat { font_id: font, color: P.fingers[f.group()], ..Default::default() });
+        job.append(f.name(), 0.0, TextFormat { font_id: font, color: P.text, ..Default::default() });
         let galley = ui.painter().layout_job(job);
-        let pos = r.center() - galley.size() / 2.0;
-        ui.painter().galley(pos, galley, P.text);
+        let sw = 16.0;
+        let total = sw + 10.0 + galley.size().x;
+        let x = r.center().x - total / 2.0;
+        let swatch = Rect::from_min_size(Pos2::new(x, r.center().y - sw / 2.0), Vec2::splat(sw));
+        let p = ui.painter();
+        hatch(p, swatch, f.group(), P.sub);
+        p.rect_stroke(swatch, CornerRadius::ZERO, Stroke::new(1.0, P.line), StrokeKind::Inside);
+        p.galley(Pos2::new(x + sw + 10.0, r.center().y - galley.size().y / 2.0), galley, P.text);
     }
 
     fn keyboard(&self, ui: &mut egui::Ui) {
@@ -398,25 +445,32 @@ impl App {
         let hot = next.and_then(|c| locate(self.lang, c));
         let allowed = self.lang.allowed(self.lesson);
         let new = self.lang.lesson(self.lesson).new;
-        let radius = CornerRadius::same(7);
+        let radius = CornerRadius::ZERO;
 
         for (r, keys) in self.lang.rows().iter().enumerate() {
             for (col, ch) in keys.chars().enumerate() {
                 let min = Pos2::new(x0 + (offsets[r] + col as f32) * unit, rect.top() + r as f32 * unit);
                 let kr = Rect::from_min_size(min, Vec2::splat(KEY));
-                let fc = P.fingers[Finger::for_column(col).group()];
+                let group = Finger::for_column(col).group();
                 let in_lesson = allowed.as_ref().map_or(true, |a| a.contains(&ch));
                 let is_hot = hot == Some((r, col));
-                let (fill, label) = if is_hot {
-                    (fc, P.bg)
+                let label = if is_hot {
+                    painter.rect_filled(kr, radius, P.accent);
+                    P.bg
                 } else if in_lesson {
-                    (fc.gamma_multiply(0.13), fc)
+                    painter.rect_filled(kr, radius, P.bg);
+                    hatch(painter, kr.shrink(1.0), group, P.hatch);
+                    let border = if new.contains(ch) { P.text } else { P.line };
+                    painter.rect_stroke(kr, radius, Stroke::new(1.0, border), StrokeKind::Inside);
+                    P.text
                 } else {
-                    (P.surface, P.faint)
+                    painter.rect_stroke(kr, radius, Stroke::new(1.0, P.surface.gamma_multiply(1.6)), StrokeKind::Inside);
+                    P.faint
                 };
-                painter.rect_filled(kr, radius, fill);
-                if !is_hot && new.contains(ch) {
-                    painter.rect_stroke(kr, radius, Stroke::new(1.5, fc), StrokeKind::Inside);
+                if in_lesson && !is_hot {
+                    let g = painter.layout_no_wrap(ch.to_string(), FontId::proportional(16.0), label);
+                    let bg = Rect::from_center_size(kr.center(), g.size() + Vec2::new(4.0, 0.0));
+                    painter.rect_filled(bg, CornerRadius::ZERO, P.bg);
                 }
                 painter.text(kr.center(), Align2::CENTER_CENTER, ch, FontId::proportional(16.0), label);
                 if r == 1 && (col == 3 || col == 6) {
@@ -427,17 +481,23 @@ impl App {
         }
 
         let sr = Rect::from_min_size(Pos2::new(x0 + 3.5 * unit, rect.top() + 3.0 * unit), Vec2::new(6.0 * unit - GAP, KEY));
-        let tc = P.fingers[Finger::Thumb.group()];
-        let (fill, label) = if next == Some(' ') { (tc, P.bg) } else { (tc.gamma_multiply(0.13), tc) };
-        painter.rect_filled(sr, radius, fill);
+        let label = if next == Some(' ') {
+            painter.rect_filled(sr, radius, P.accent);
+            P.bg
+        } else {
+            hatch(painter, sr.shrink(1.0), Finger::Thumb.group(), P.hatch);
+            painter.rect_stroke(sr, radius, Stroke::new(1.0, P.line), StrokeKind::Inside);
+            let g = painter.layout_no_wrap("пробел".to_string(), FontId::proportional(14.0), P.text);
+            painter.rect_filled(Rect::from_center_size(sr.center(), g.size() + Vec2::new(8.0, 0.0)), CornerRadius::ZERO, P.bg);
+            P.text
+        };
         painter.text(sr.center(), Align2::CENTER_CENTER, "пробел", FontId::proportional(14.0), label);
     }
 
     fn footer(&self, ui: &egui::Ui, full: Rect) {
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - FOOTER), full.max);
         let p = ui.painter();
-        p.rect_filled(bar, CornerRadius::ZERO, P.surface.gamma_multiply(0.5));
-        p.hline(bar.x_range(), bar.top(), Stroke::new(1.0, P.faint));
+        p.hline(bar.x_range(), bar.top(), Stroke::new(1.0, P.line));
 
         let left = Vec2::new(-1.0, 0.0);
         let right = Vec2::new(1.0, 0.0);
@@ -471,8 +531,7 @@ impl App {
             let cy = bar.center().y;
             for (chip, w) in chips.iter().zip(chip_w) {
                 let r = Rect::from_min_size(Pos2::new(x, cy - 10.0), Vec2::new(w, 20.0));
-                p.rect_filled(r, CornerRadius::same(5), P.surface);
-                p.rect_stroke(r, CornerRadius::same(5), Stroke::new(1.0, P.faint), StrokeKind::Inside);
+                p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, P.line), StrokeKind::Inside);
                 match chip {
                     Chip::Text(s) => {
                         p.text(r.center(), Align2::CENTER_CENTER, *s, font.clone(), P.text);
