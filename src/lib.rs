@@ -2,6 +2,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const RU_WORDS: &str = include_str!("../words/ru.txt");
 pub const EN_WORDS: &str = include_str!("../words/en.txt");
+pub const RU_PHRASES: &str = include_str!("../words/phrases_ru.txt");
+pub const EN_PHRASES: &str = include_str!("../words/phrases_en.txt");
+pub const PHRASES_PER_TEST: usize = 4;
 pub const WORDS_PER_TEST: usize = 25;
 pub const ENDLESS_AHEAD: usize = 200;
 pub const ENDLESS_LINES: usize = 3;
@@ -135,6 +138,30 @@ pub const LESSONS_EN: [Lesson; 7] = [
     Lesson { title: "Все ряды — слова", new: "" },
 ];
 
+pub const PAIRS_RU: [Lesson; 8] = [
+    Lesson { title: "ва ол", new: "ваол" },
+    Lesson { title: "фы дж", new: "фыдж" },
+    Lesson { title: "ми ть", new: "мить" },
+    Lesson { title: "еп нр", new: "епнр" },
+    Lesson { title: "ук гш", new: "укгш" },
+    Lesson { title: "чс бю", new: "чсбю" },
+    Lesson { title: "йц щз", new: "йцщз" },
+    Lesson { title: "я эхъ", new: "яэхъ" },
+];
+
+pub const PAIRS_EN: [Lesson; 8] = [
+    Lesson { title: "df jk", new: "dfjk" },
+    Lesson { title: "as l;", new: "asl;" },
+    Lesson { title: "vb nm", new: "vbnm" },
+    Lesson { title: "tg yh", new: "tgyh" },
+    Lesson { title: "er ui", new: "erui" },
+    Lesson { title: "qw op", new: "qwop" },
+    Lesson { title: "xc , .", new: "xc,." },
+    Lesson { title: "z ! ? /", new: "z!?/" },
+];
+
+pub const PAIR_COUNT: usize = 8;
+
 pub const LESSON_COUNT: usize = 7;
 pub const ENDLESS: usize = LESSON_COUNT;
 pub const MODE_COUNT: usize = LESSON_COUNT + 1;
@@ -192,6 +219,13 @@ impl Lang {
         }
     }
 
+    pub fn pairs(self) -> &'static [Lesson; PAIR_COUNT] {
+        match self {
+            Lang::Ru => &PAIRS_RU,
+            Lang::En => &PAIRS_EN,
+        }
+    }
+
     pub fn lesson(self, mode: usize) -> &'static Lesson {
         self.lessons().get(mode).unwrap_or(&ENDLESS_LESSON)
     }
@@ -202,6 +236,145 @@ impl Lang {
         }
         Some(self.lessons()[..=lesson].iter().flat_map(|l| l.new.chars()).collect())
     }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Best {
+    pub cpm: u32,
+    pub secs: u32,
+    pub acc: u32,
+}
+
+fn state_file(name: &str) -> Option<std::path::PathBuf> {
+    Some(state_path()?.with_file_name(name))
+}
+
+fn write_file(path: Option<std::path::PathBuf>, text: String) {
+    if let Some(p) = path {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, text);
+    }
+}
+
+fn lang_tag(lang: Lang) -> &'static str {
+    if lang == Lang::En { "en" } else { "ru" }
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Kind {
+    Lesson(usize),
+    Phrases(bool),
+    Mixed(bool),
+}
+
+impl Kind {
+    pub fn endless(self) -> bool {
+        matches!(self, Kind::Phrases(true) | Kind::Mixed(true))
+    }
+}
+
+pub fn load_gui_state() -> (Lang, Kind) {
+    let text = state_file("gui").and_then(|p| std::fs::read_to_string(p).ok());
+    let Some(text) = text else {
+        return (load_state().0, Kind::Lesson(0));
+    };
+    let mut parts = text.split_whitespace();
+    let lang = if parts.next() == Some("en") { Lang::En } else { Lang::Ru };
+    let tag = parts.next();
+    let endless = parts.next() == Some("inf");
+    let kind = match tag {
+        Some("phrases") => Kind::Phrases(endless),
+        Some("mixed") => Kind::Mixed(endless),
+        s => Kind::Lesson(s.and_then(|s| s.parse::<usize>().ok()).filter(|&n| n < PAIR_COUNT).unwrap_or(0)),
+    };
+    (lang, kind)
+}
+
+pub fn save_gui_state(lang: Lang, kind: Kind) {
+    let kind = match kind {
+        Kind::Lesson(i) => i.to_string(),
+        Kind::Phrases(e) => format!("phrases {}", if e { "inf" } else { "fin" }),
+        Kind::Mixed(e) => format!("mixed {}", if e { "inf" } else { "fin" }),
+    };
+    write_file(state_file("gui"), format!("{} {kind}\n", lang_tag(lang)));
+}
+
+impl Lang {
+    pub fn phrases(self) -> Vec<&'static str> {
+        let text = match self {
+            Lang::Ru => RU_PHRASES,
+            Lang::En => EN_PHRASES,
+        };
+        text.lines().map(str::trim).filter(|l| !l.is_empty()).collect()
+    }
+}
+
+pub fn make_blend(lang: Lang, rng: &mut Rng) -> Vec<char> {
+    let phrases = lang.phrases();
+    let words: Vec<&str> = lang.words().split_whitespace().filter(|w| w.chars().count() >= MIN_WORD).collect();
+    let mut parts: Vec<String> = Vec::new();
+    let mut len = 0;
+    let mut words_next = rng.below(2) == 0;
+    while len < 160 {
+        let part = if words_next {
+            let n = 2 + rng.below(3);
+            (0..n).map(|_| words[rng.below(words.len())]).collect::<Vec<_>>().join(" ")
+        } else {
+            phrases[rng.below(phrases.len())].to_string()
+        };
+        words_next = !words_next || rng.below(3) == 0;
+        len += part.chars().count() + 1;
+        parts.push(part);
+    }
+    parts.join(" ").chars().collect()
+}
+
+pub fn make_phrases(lang: Lang, rng: &mut Rng) -> Vec<char> {
+    let all = lang.phrases();
+    let mut picked: Vec<&str> = Vec::with_capacity(PHRASES_PER_TEST);
+    while picked.len() < PHRASES_PER_TEST {
+        let p = all[rng.below(all.len())];
+        if !picked.contains(&p) {
+            picked.push(p);
+        }
+    }
+    picked.join(" ").chars().collect()
+}
+
+fn read_results() -> Vec<(String, usize, Best)> {
+    let text = state_file("results").and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    text.lines()
+        .filter_map(|line| {
+            let v: Vec<&str> = line.split_whitespace().collect();
+            let n = |i: usize| v.get(i)?.parse::<u32>().ok();
+            Some((v.first()?.to_string(), n(1)? as usize, Best { cpm: n(2)?, secs: n(3)?, acc: n(4)? }))
+        })
+        .collect()
+}
+
+pub fn load_results(lang: Lang) -> Vec<Option<Best>> {
+    let mut out = vec![None; PAIR_COUNT];
+    for (tag, i, b) in read_results() {
+        if tag == lang_tag(lang) && i < PAIR_COUNT {
+            out[i] = Some(b);
+        }
+    }
+    out
+}
+
+pub fn save_result(lang: Lang, lesson: usize, best: Best) -> bool {
+    let mut all = read_results();
+    let tag = lang_tag(lang);
+    match all.iter_mut().find(|(t, i, _)| t == tag && *i == lesson) {
+        Some((_, _, b)) if b.cpm >= best.cpm => return false,
+        Some((_, _, b)) => *b = best,
+        None => all.push((tag.to_string(), lesson, best)),
+    }
+    let text: String = all.iter().map(|(t, i, b)| format!("{t} {i} {} {} {}\n", b.cpm, b.secs, b.acc)).collect();
+    write_file(state_file("results"), text);
+    true
 }
 
 pub fn state_path() -> Option<std::path::PathBuf> {
@@ -254,7 +427,11 @@ pub fn save_state_mix(lang: Lang, lesson: usize, mix: Mix) {
 }
 
 pub fn locate(lang: Lang, c: char) -> Option<(usize, usize)> {
-    let c = c.to_lowercase().next()?;
+    let c = match (lang, c) {
+        (Lang::En, '?') => '/',
+        (Lang::Ru, ',') => '.',
+        _ => c.to_lowercase().next()?,
+    };
     lang.rows()
         .iter()
         .enumerate()
@@ -264,7 +441,7 @@ pub fn locate(lang: Lang, c: char) -> Option<(usize, usize)> {
 pub fn finger_of(lang: Lang, c: char) -> Option<Finger> {
     match c {
         ' ' => Some(Finger::Thumb),
-        'ё' | 'Ё' | '`' | '~' => Some(Finger::LPinky),
+        'ё' | 'Ё' | '`' | '~' | '!' => Some(Finger::LPinky),
         _ => locate(lang, c).map(|(_, col)| Finger::for_column(col)),
     }
 }
@@ -304,9 +481,12 @@ pub fn pseudo_word(new: &[char], allowed: &[char], rng: &mut Rng) -> String {
 }
 
 pub fn make_text(lang: Lang, lesson: usize, rng: &mut Rng) -> Vec<char> {
-    let dict: Vec<&str> = lang.words().split_whitespace().collect();
-    let allowed = lang.allowed(lesson);
     let new: Vec<char> = lang.lesson(lesson).new.chars().collect();
+    make_letters(lang, &new, lang.allowed(lesson), rng)
+}
+
+pub fn make_letters(lang: Lang, new: &[char], allowed: Option<Vec<char>>, rng: &mut Rng) -> Vec<char> {
+    let dict: Vec<&str> = lang.words().split_whitespace().collect();
     let real: Vec<&str> = match &allowed {
         None => dict.clone(),
         Some(a) => dict.iter().copied().filter(|w| w.chars().all(|c| a.contains(&c))).collect(),
@@ -315,7 +495,7 @@ pub fn make_text(lang: Lang, lesson: usize, rng: &mut Rng) -> Vec<char> {
     let mut picked: Vec<String> = Vec::with_capacity(WORDS_PER_TEST);
     while picked.len() < WORDS_PER_TEST {
         let w = match &allowed {
-            Some(a) if rng.below(16) >= real.len().min(8) => pseudo_word(&new, a, rng),
+            Some(a) if rng.below(16) >= real.len().min(8) => pseudo_word(new, a, rng),
             _ => real[rng.below(real.len())].to_string(),
         };
         if picked.last() != Some(&w) {
@@ -360,6 +540,8 @@ pub struct Test {
     pub last_key: Option<Instant>,
     pub idle: Duration,
     pub mix: Option<Mix>,
+    pub phrases: bool,
+    pub blend: bool,
 }
 
 impl Test {
@@ -367,6 +549,34 @@ impl Test {
         let mut t = Test::new(make_text(lang, mode, rng));
         t.endless = is_endless(mode);
         t
+    }
+
+    pub fn for_kind(lang: Lang, kind: Kind, rng: &mut Rng) -> Self {
+        match kind {
+            Kind::Lesson(i) => Test::for_pair(lang, i, rng),
+            Kind::Phrases(false) => {
+                let mut t = Test::new(make_phrases(lang, rng));
+                t.phrases = true;
+                t
+            }
+            Kind::Phrases(true) => {
+                let mut t = Test::new(make_blend(lang, rng));
+                t.endless = true;
+                t.blend = true;
+                t
+            }
+            Kind::Mixed(endless) => {
+                let mut t = Test::new(make_endless(lang, Mix::All, rng));
+                t.endless = endless;
+                t.mix = Some(Mix::All);
+                t
+            }
+        }
+    }
+
+    pub fn for_pair(lang: Lang, lesson: usize, rng: &mut Rng) -> Self {
+        let letters: Vec<char> = lang.pairs()[lesson].new.chars().collect();
+        Test::new(make_letters(lang, &letters, Some(letters.clone()), rng))
     }
 
     pub fn for_mode_mix(lang: Lang, mode: usize, mix: Mix, rng: &mut Rng) -> Self {
@@ -383,6 +593,8 @@ impl Test {
         if self.endless && self.target.len() - self.typed.len().min(self.target.len()) < ENDLESS_AHEAD {
             self.target.push(' ');
             let more = match self.mix {
+                _ if self.phrases => make_phrases(lang, rng),
+                _ if self.blend => make_blend(lang, rng),
                 Some(mix) => make_endless(lang, mix, rng),
                 None => make_text(lang, ENDLESS, rng),
             };
@@ -407,6 +619,8 @@ impl Test {
             last_key: None,
             idle: Duration::ZERO,
             mix: None,
+            phrases: false,
+            blend: false,
         }
     }
 
@@ -628,6 +842,94 @@ mod tests {
                     for c in &text {
                         assert!(*c == ' ' || allowed.contains(c), "{lang:?} урок {lesson}: {c}");
                     }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pairs_cover_alphabet_once() {
+        for (lang, alphabet) in [
+            (Lang::Ru, "абвгдежзийклмнопрстуфхцчшщъыьэюя"),
+            (Lang::En, "abcdefghijklmnopqrstuvwxyz"),
+        ] {
+            let mut all: Vec<char> = lang.pairs().iter().flat_map(|l| l.new.chars()).filter(|c| c.is_alphabetic()).collect();
+            all.sort();
+            let mut expected: Vec<char> = alphabet.chars().collect();
+            expected.sort();
+            assert_eq!(all, expected, "{lang:?}");
+            for l in lang.pairs() {
+                assert_eq!(l.title.replace(' ', ""), l.new);
+            }
+        }
+    }
+
+    #[test]
+    fn pair_text_uses_only_learned_letters() {
+        let mut rng = Rng(777);
+        for lang in [Lang::Ru, Lang::En] {
+            for lesson in 0..PAIR_COUNT {
+                let allowed: Vec<char> = lang.pairs()[lesson].new.chars().collect();
+                let text = Test::for_pair(lang, lesson, &mut rng).target;
+                assert_eq!(text.iter().filter(|&&c| c == ' ').count(), WORDS_PER_TEST - 1);
+                assert!(text.iter().all(|c| *c == ' ' || allowed.contains(c)), "{lang:?} {lesson}");
+                for c in &allowed {
+                    assert!(finger_of(lang, *c).is_some(), "{lang:?}: {c}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn results_keep_best() {
+        let dir = std::env::temp_dir().join(format!("fastword-test-{}", std::process::id()));
+        std::env::set_var("XDG_STATE_HOME", &dir);
+        let b = |cpm| Best { cpm, secs: 30, acc: 97 };
+        assert!(save_result(Lang::Ru, 2, b(120)));
+        assert!(!save_result(Lang::Ru, 2, b(90)));
+        assert!(save_result(Lang::Ru, 2, b(150)));
+        assert!(save_result(Lang::En, 2, b(40)));
+        let ru = load_results(Lang::Ru);
+        assert_eq!(ru[2], Some(b(150)));
+        assert_eq!(ru[0], None);
+        assert_eq!(load_results(Lang::En)[2], Some(b(40)));
+        for (lang, kind) in [(Lang::En, Kind::Lesson(0)), (Lang::Ru, Kind::Lesson(7)), (Lang::Ru, Kind::Phrases(false)), (Lang::En, Kind::Mixed(true)), (Lang::Ru, Kind::Phrases(true))] {
+            save_gui_state(lang, kind);
+            assert_eq!(load_gui_state(), (lang, kind));
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn phrases_are_typeable() {
+        for lang in [Lang::Ru, Lang::En] {
+            assert!(lang.phrases().len() >= PHRASES_PER_TEST);
+            for p in lang.phrases() {
+                for c in p.chars() {
+                    assert!(finger_of(lang, c).is_some(), "{lang:?}: «{c}» в «{p}»");
+                    assert!(!lang.is_foreign(c), "{lang:?}: «{c}» в «{p}»");
+                }
+            }
+            let mut rng = Rng(5);
+            let t = Test::for_kind(lang, Kind::Phrases(false), &mut rng);
+            assert!(!t.endless && t.target.len() > 40);
+            let t = Test::for_kind(lang, Kind::Mixed(false), &mut rng);
+            assert!(!t.endless && t.target.iter().filter(|&&c| c == ' ').count() == WORDS_PER_TEST - 1);
+            let t = Test::for_kind(lang, Kind::Phrases(true), &mut rng);
+            assert!(t.endless && t.blend && t.target.len() >= 160);
+            assert!(t.target.iter().all(|c| finger_of(lang, *c).is_some()));
+            for kind in [Kind::Phrases(true), Kind::Mixed(true)] {
+                let mut t = Test::for_kind(lang, kind, &mut rng);
+                assert!(t.endless);
+                let start = t.target.len();
+                for _ in 0..start {
+                    let c = t.target[t.typed.len()];
+                    t.type_char(c, lang);
+                    t.top_up(lang, &mut rng);
+                }
+                assert!(!t.done() && t.target.len() > start, "{kind:?}");
+                if kind != Kind::Mixed(true) {
+                    assert!(t.target.iter().all(|c| finger_of(lang, *c).is_some()));
                 }
             }
         }
