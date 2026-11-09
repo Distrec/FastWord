@@ -15,18 +15,20 @@ struct Palette {
     dim: Color32,
     faint: Color32,
     accent: Color32,
+    sub: Color32,
     error: Color32,
     warn: Color32,
     fingers: [Color32; 5],
 }
 
 const P: Palette = Palette {
-    bg: Color32::from_rgb(0x15, 0x15, 0x17),
-    surface: Color32::from_rgb(0x20, 0x20, 0x24),
-    text: Color32::from_rgb(0xe8, 0xe6, 0xe3),
-    dim: Color32::from_rgb(0x6e, 0x6c, 0x6a),
-    faint: Color32::from_rgb(0x34, 0x33, 0x36),
-    accent: Color32::from_rgb(0xe2, 0xb7, 0x6e),
+    bg: Color32::from_rgb(0x00, 0x00, 0x00),
+    surface: Color32::from_rgb(0x16, 0x16, 0x16),
+    text: Color32::from_rgb(0xfc, 0xfc, 0xfc),
+    dim: Color32::from_rgb(0x75, 0x75, 0x75),
+    faint: Color32::from_rgb(0x40, 0x40, 0x40),
+    accent: Color32::from_rgb(0xf8, 0xf8, 0xf8),
+    sub: Color32::from_rgb(0x9c, 0x9c, 0x9c),
     error: Color32::from_rgb(0xe0, 0x6c, 0x75),
     warn: Color32::from_rgb(0xe5, 0xc0, 0x7b),
     fingers: [
@@ -128,11 +130,11 @@ impl App {
         let cy = full.top() + 29.0;
         let font = FontId::proportional(18.0);
         let fast = p.layout_no_wrap("Fast".into(), font.clone(), P.text);
-        let word = p.layout_no_wrap("Word".into(), font, P.accent);
+        let word = p.layout_no_wrap("Word".into(), font, P.sub);
         let mut x = full.left() + MARGIN;
         p.galley(Pos2::new(x, cy - fast.size().y / 2.0), fast.clone(), P.text);
         x += fast.size().x;
-        p.galley(Pos2::new(x, cy - word.size().y / 2.0), word, P.accent);
+        p.galley(Pos2::new(x, cy - word.size().y / 2.0), word, P.sub);
     }
 
     fn menu(&mut self, ui: &mut egui::Ui, full: Rect) {
@@ -568,11 +570,11 @@ fn main() -> eframe::Result {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
             let mut fonts = egui::FontDefinitions::default();
             fonts.font_data.insert(
-                "FreeMono".into(),
-                std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/FreeMono.otf"))),
+                "IBMPlexMono".into(),
+                std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"))),
             );
             for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
-                fonts.families.entry(family).or_default().insert(0, "FreeMono".into());
+                fonts.families.entry(family).or_default().insert(0, "IBMPlexMono".into());
             }
             cc.egui_ctx.set_fonts(fonts);
             Ok(Box::new(App::new(lang, lesson, load_mix())))
