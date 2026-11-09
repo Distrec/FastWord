@@ -1,6 +1,6 @@
 #![windows_subsystem = "windows"]
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, epaint::PathShape, text::LayoutJob, Align2, Color32, CornerRadius, FontId, Key, Pos2,
@@ -102,6 +102,13 @@ const FOOTER: f32 = 44.0;
 const MENU_W: f32 = 172.0;
 const MARGIN: f32 = 20.0;
 
+#[derive(Clone, Copy, PartialEq)]
+enum Screen {
+    Boot,
+    Start,
+    Practice,
+}
+
 struct App {
     lang: Lang,
     lesson: usize,
@@ -109,6 +116,56 @@ struct App {
     rng: Rng,
     test: Test,
     content_h: f32,
+    screen: Screen,
+    boot: Instant,
+    shown: Instant,
+    tab: usize,
+    pick: usize,
+    grain: Option<egui::TextureHandle>,
+    dots: Option<egui::TextureHandle>,
+}
+
+const BOOT_LEN: f32 = 2.6;
+const FADE: f32 = 0.35;
+
+fn hash(x: u32, y: u32, seed: u32) -> f32 {
+    let mut h = x.wrapping_mul(374761393) ^ y.wrapping_mul(668265263) ^ seed.wrapping_mul(2246822519);
+    h = (h ^ (h >> 13)).wrapping_mul(1274126177);
+    h ^= h >> 16;
+    (h & 0xffff) as f32 / 65535.0
+}
+
+fn grain_image() -> egui::ColorImage {
+    let n = 256;
+    let mut px = Vec::with_capacity(n * n * 4);
+    for y in 0..n {
+        for x in 0..n {
+            let a = (hash(x as u32, y as u32, 7) * 22.0) as u8;
+            px.extend_from_slice(&[255, 255, 255, a]);
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([n, n], &px)
+}
+
+fn dots_image() -> egui::ColorImage {
+    let (w, h) = (480usize, 320usize);
+    let g = |u: f32, v: f32, cu: f32, cv: f32, su: f32, sv: f32| (-((u - cu).powi(2) / su + (v - cv).powi(2) / sv)).exp();
+    let mut px = Vec::with_capacity(w * h * 4);
+    for y in 0..h {
+        for x in 0..w {
+            let u = x as f32 / w as f32;
+            let v = y as f32 / h as f32;
+            let blob = g(u, v, 0.52, 0.42, 0.035, 0.07);
+            let side = 0.65 * g(u, v, 0.88, 0.78, 0.02, 0.03);
+            let d = v - (1.05 - 0.95 * u);
+            let ridge = 0.75 * (-(d * d) / 0.004).exp() * ((u - 0.2) / 0.4).clamp(0.0, 1.0);
+            let f = (blob.max(side).max(ridge) * 0.92).min(1.0);
+            let on = hash(x as u32, y as u32, 3) < f.powf(2.1);
+            let c = (90.0 + 130.0 * f) as u8;
+            px.extend_from_slice(&if on { [c, c, c, 255] } else { [0, 0, 0, 0] });
+        }
+    }
+    egui::ColorImage::from_rgba_unmultiplied([w, h], &px)
 }
 
 enum Chip {
@@ -120,7 +177,243 @@ impl App {
     fn new(lang: Lang, lesson: usize, mix: Mix) -> Self {
         let mut rng = Rng::new();
         let test = Test::for_mode_mix(lang, lesson, mix, &mut rng);
-        App { lang, lesson, mix, rng, test, content_h: 0.0 }
+        App {
+            lang,
+            lesson,
+            mix,
+            rng,
+            test,
+            content_h: 0.0,
+            screen: Screen::Boot,
+            boot: Instant::now(),
+            shown: Instant::now(),
+            tab: if is_endless(lesson) { 1 } else { 0 },
+            pick: if is_endless(lesson) { if mix == Mix::All { 1 } else { 0 } } else { lesson },
+            grain: None,
+            dots: None,
+        }
+    }
+
+    fn go(&mut self, screen: Screen) {
+        self.screen = screen;
+        self.shown = Instant::now();
+        if screen == Screen::Start {
+            self.tab = if is_endless(self.lesson) { 1 } else { 0 };
+            self.pick = if self.tab == 1 { if self.mix == Mix::All { 1 } else { 0 } } else { self.lesson };
+        }
+    }
+
+    fn picks(&self) -> usize {
+        if self.tab == 0 { LESSON_COUNT } else { 2 }
+    }
+
+    fn launch(&mut self) {
+        if self.tab == 0 {
+            self.lesson = self.pick.min(LESSON_COUNT - 1);
+        } else {
+            self.lesson = ENDLESS;
+            self.mix = if self.pick == 1 { Mix::All } else { Mix::Words };
+        }
+        self.switch();
+        self.go(Screen::Practice);
+    }
+
+    fn textures(&mut self, ctx: &egui::Context) {
+        if self.grain.is_none() {
+            self.grain = Some(ctx.load_texture("grain", grain_image(), egui::TextureOptions::NEAREST_REPEAT));
+        }
+        if self.dots.is_none() {
+            self.dots = Some(ctx.load_texture("dots", dots_image(), egui::TextureOptions::NEAREST));
+        }
+    }
+
+    fn draw_grain(&self, p: &egui::Painter, r: Rect, now: f32) {
+        if let Some(tex) = &self.grain {
+            let k = (now * 12.0) as u32;
+            let off = Vec2::new(hash(k, 1, 9), hash(k, 2, 9));
+            let uv = Rect::from_min_size(off.to_pos2(), r.size() / 256.0);
+            p.image(tex.id(), r, uv, Color32::WHITE);
+        }
+    }
+
+    fn draw_dots(&self, p: &egui::Painter, r: Rect, now: f32, alpha: f32) {
+        if let Some(tex) = &self.dots {
+            let drift = (now * 0.02).min(0.06);
+            let uv = Rect::from_min_max(Pos2::new(drift, drift * 0.5), Pos2::new(1.0 - 0.06 + drift, 1.0 - 0.03 + drift * 0.5));
+            p.image(tex.id(), r, uv, Color32::WHITE.gamma_multiply(alpha));
+        }
+    }
+
+    fn splash(&self, ui: &egui::Ui, full: Rect) {
+        let p = ui.painter().clone();
+        let now = self.boot.elapsed().as_secs_f32();
+        let frac = (now / BOOT_LEN).min(1.0);
+        let fade_in = (now / 0.5).min(1.0);
+        let light = Color32::from_gray(0xc8);
+        {
+            let x0 = full.left() + full.width() * 0.30;
+            let r = Rect::from_min_max(Pos2::new(x0, full.top()), full.max);
+            self.draw_dots(&p, r, now, fade_in * 0.55);
+            let edge = 140.0;
+            for i in 0..28 {
+                let k = i as f32 / 28.0;
+                let band = Rect::from_min_size(Pos2::new(x0 + k * edge, full.top()), Vec2::new(edge / 28.0 + 1.0, full.height()));
+                p.rect_filled(band, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - k));
+            }
+        }
+        {
+            let frame = Rect::from_center_size(full.center(), Vec2::new((full.width() - 120.0).min(860.0), 420.0));
+            let sub = P.sub.gamma_multiply(fade_in);
+            let small = FontId::monospace(12.0);
+            p.text(frame.left_top(), Align2::LEFT_TOP, format!("Ver /\nV.{}", env!("CARGO_PKG_VERSION")), small.clone(), sub);
+            p.text(frame.left_top() + Vec2::new(150.0, 18.0), Align2::LEFT_TOP, "TOUCH TYPING TRAINER", FontId::monospace(13.0), sub);
+            p.text(frame.right_top() + Vec2::new(0.0, 18.0), Align2::RIGHT_TOP, self.lang.label(), FontId::monospace(13.0), P.text.gamma_multiply(fade_in));
+
+            let word = "FastWord";
+            let big = FontId::monospace(118.0);
+            let typed = (((now - 0.3) / 0.16).floor() + 1.0).clamp(0.0, word.len() as f32) as usize;
+            let cw = p.layout_no_wrap("M".into(), big.clone(), light).size().x;
+            let wx = frame.left() - 6.0;
+            let wy = frame.center().y;
+            for (i, ch) in word.chars().take(typed).enumerate() {
+                p.text(Pos2::new(wx + i as f32 * cw, wy), Align2::LEFT_CENTER, ch, big.clone(), light);
+            }
+            if (now * 2.5) as i32 % 2 == 0 && now < BOOT_LEN - 0.3 {
+                let cur = Rect::from_min_size(Pos2::new(wx + typed as f32 * cw + 4.0, wy - 46.0), Vec2::new(cw * 0.55, 96.0));
+                p.rect_filled(cur, CornerRadius::ZERO, light);
+            }
+
+            let by = frame.bottom() - 40.0;
+            p.text(Pos2::new(frame.left(), by), Align2::LEFT_TOP, "© 2026 DISTREC\nALL KEYS RESERVED.", small.clone(), sub);
+            p.text(Pos2::new(frame.right(), by), Align2::RIGHT_TOP, format!("{:03}%", (frac * 100.0) as u32), small.clone(), P.text.gamma_multiply(fade_in));
+            let len = 16.0 + (frame.width() - 16.0) * frac;
+            p.hline(frame.left()..=(frame.left() + len), frame.bottom() + 6.0, Stroke::new(1.0, P.text));
+        }
+        self.draw_grain(&p, full, now);
+    }
+
+    fn start(&mut self, ui: &mut egui::Ui, full: Rect) {
+        let p = ui.painter().clone();
+        let now = self.shown.elapsed().as_secs_f32();
+        self.logo(ui, full);
+        let mut new_lang = None;
+        for (i, lang) in [Lang::Ru, Lang::En].into_iter().enumerate() {
+            let r = Rect::from_min_size(Pos2::new(full.right() - MARGIN - 94.0 + i as f32 * 50.0, full.top() + 17.0), Vec2::new(44.0, 24.0));
+            let resp = ui.interact(r, ui.scope_id().with(("slang", i)), Sense::CLICK);
+            let on = lang == self.lang;
+            let color = if on || resp.hovered() { P.text } else { P.dim };
+            p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, if on { P.text } else { P.line }), StrokeKind::Inside);
+            p.text(r.center(), Align2::CENTER_CENTER, lang.label(), FontId::monospace(13.0), color);
+            if resp.clicked() {
+                new_lang = Some(lang);
+            }
+        }
+
+        let area = Rect::from_min_max(Pos2::new(full.left(), full.top() + 56.0), Pos2::new(full.right(), full.bottom() - FOOTER));
+        let box_w = (area.width() - 2.0 * MARGIN).min(780.0);
+        let box_h = 360.0;
+        let frame = Rect::from_center_size(area.center(), Vec2::new(box_w, box_h));
+        let btn_w = 260.0;
+        let gap = 16.0;
+        let btn_h = (box_h - gap) / 2.0;
+        let modes = [
+            ("01 / MODE", "ТРЕНИРОВКИ", format!("{} уроков · по рядам", LESSON_COUNT)),
+            ("02 / MODE", "БЕСКОНЕЧНЫЙ", "∞ · слова без конца".to_string()),
+        ];
+        let mut new_tab = None;
+        for (i, (tag, title, desc)) in modes.iter().enumerate() {
+            let r = Rect::from_min_size(Pos2::new(frame.left(), frame.top() + i as f32 * (btn_h + gap)), Vec2::new(btn_w, btn_h));
+            let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::CLICK);
+            let on = self.tab == i;
+            let border = if on { P.text } else if resp.hovered() { P.dim } else { P.line };
+            p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, border), StrokeKind::Inside);
+            let inner = r.shrink(18.0);
+            p.text(inner.left_top(), Align2::LEFT_TOP, *tag, FontId::monospace(10.5), P.dim);
+            let mark = Rect::from_min_size(Pos2::new(inner.right() - 8.0, inner.top() + 2.0), Vec2::splat(8.0));
+            if on {
+                p.rect_filled(mark, CornerRadius::ZERO, P.text);
+            } else {
+                p.rect_stroke(mark, CornerRadius::ZERO, Stroke::new(1.0, P.line), StrokeKind::Inside);
+            }
+            p.text(inner.left_center() + Vec2::new(0.0, -4.0), Align2::LEFT_CENTER, *title, FontId::monospace(24.0), if on || resp.hovered() { P.text } else { P.dim });
+            p.text(inner.left_bottom(), Align2::LEFT_BOTTOM, desc, FontId::monospace(11.5), P.dim);
+            if on {
+                p.text(inner.right_bottom(), Align2::RIGHT_BOTTOM, "→", FontId::monospace(16.0), P.text);
+            }
+            if resp.clicked() {
+                new_tab = Some(i);
+            }
+        }
+
+        let list = Rect::from_min_max(Pos2::new(frame.left() + btn_w + 48.0, frame.top()), frame.max);
+        let btn_mid = frame.top() + self.tab as f32 * (btn_h + gap) + btn_h / 2.0;
+        let head_y = list.top() + 7.0;
+        let jx = frame.left() + btn_w + 24.0;
+        let s = Stroke::new(1.0, P.dim);
+        p.hline((frame.left() + btn_w)..=jx, btn_mid, s);
+        p.vline(jx, head_y.min(btn_mid)..=head_y.max(btn_mid), s);
+        p.hline(jx..=(list.left() - 6.0), head_y, s);
+        p.circle_filled(Pos2::new(list.left() - 6.0, head_y), 2.5, P.text);
+
+        let label = if self.tab == 0 { "LESSONS" } else { "ENDLESS" };
+        section(&p, list.left(), list.right(), list.top(), label, P.dim, P.line);
+        let mut y = list.top() + 30.0;
+        let mut clicked = None;
+        let rows: Vec<(String, String)> = if self.tab == 0 {
+            (0..LESSON_COUNT)
+                .map(|i| {
+                    let l = self.lang.lesson(i);
+                    (l.title.to_string(), l.new.chars().map(|c| c.to_string()).collect::<Vec<_>>().join(" "))
+                })
+                .collect()
+        } else {
+            vec![
+                ("Слова".to_string(), "только настоящие слова от 3 букв".to_string()),
+                ("Всё подряд".to_string(), "слова и сочетания букв".to_string()),
+            ]
+        };
+        if self.tab == 1 {
+            p.text(Pos2::new(list.left(), y), Align2::LEFT_TOP, "Текст не кончается. 3 секунды без нажатий — пауза.", FontId::proportional(12.5), P.dim);
+            y += 34.0;
+        }
+        for (i, (title, extra)) in rows.iter().enumerate() {
+            let row = Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width(), 36.0));
+            let resp = ui.interact(row, ui.scope_id().with(("pick", self.tab, i)), Sense::CLICK);
+            if resp.hovered() && resp.ctx.input(|i| i.pointer.delta() != Vec2::ZERO) {
+                self.pick = i;
+            }
+            let on = self.pick == i;
+            if on {
+                p.rect_filled(Rect::from_min_size(row.min + Vec2::new(0.0, 10.0), Vec2::new(3.0, 16.0)), CornerRadius::ZERO, P.text);
+            }
+            p.text(row.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, format!("{:02}", i + 1), FontId::monospace(12.0), if on { P.text } else { P.faint });
+            p.text(row.left_center() + Vec2::new(44.0, 0.0), Align2::LEFT_CENTER, title, FontId::proportional(14.0), if on { P.text } else { P.dim });
+            p.text(row.right_center(), Align2::RIGHT_CENTER, extra, FontId::monospace(11.5), if on { P.sub } else { P.faint });
+            p.hline(row.x_range(), row.bottom(), Stroke::new(1.0, P.surface.gamma_multiply(1.4)));
+            if resp.clicked() {
+                clicked = Some(i);
+            }
+            y += 36.0;
+        }
+        p.text(Pos2::new(list.left(), frame.bottom()), Align2::LEFT_BOTTOM, "Enter — начать", FontId::monospace(11.0), P.faint);
+
+        if let Some(i) = new_tab {
+            if i != self.tab {
+                self.tab = i;
+                self.pick = 0;
+            }
+        }
+        if let Some(l) = new_lang {
+            if l != self.lang {
+                self.lang = l;
+                self.switch();
+            }
+        }
+        if let Some(i) = clicked {
+            self.pick = i;
+            self.launch();
+        }
+        self.draw_grain(&p, full, now * 0.0);
     }
 
     fn new_test(&mut self) {
@@ -145,6 +438,38 @@ impl App {
 
     fn handle_input(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
+        if self.screen == Screen::Boot {
+            for e in &events {
+                match e {
+                    egui::Event::Key { key: Key::Escape, pressed: true, .. } => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    egui::Event::Key { pressed: true, .. } | egui::Event::PointerButton { pressed: true, .. } => self.go(Screen::Start),
+                    _ => {}
+                }
+            }
+            return;
+        }
+        if self.screen == Screen::Start {
+            for e in events {
+                if let egui::Event::Key { key, pressed: true, .. } = e {
+                    match key {
+                        Key::Escape => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                        Key::Tab => {
+                            self.lang = self.lang.toggle();
+                            self.switch();
+                        }
+                        Key::ArrowLeft | Key::ArrowRight => {
+                            self.tab = 1 - self.tab;
+                            self.pick = 0;
+                        }
+                        Key::ArrowUp => self.pick = (self.pick + self.picks() - 1) % self.picks(),
+                        Key::ArrowDown => self.pick = (self.pick + 1) % self.picks(),
+                        Key::Enter => self.launch(),
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
         for e in events {
             match e {
                 egui::Event::Text(t) => {
@@ -154,7 +479,7 @@ impl App {
                     }
                 }
                 egui::Event::Key { key, physical_key, pressed: true, modifiers, .. } => match key {
-                    Key::Escape => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    Key::Escape => self.go(Screen::Start),
                     Key::Backspace => self.test.backspace(),
                     Key::Tab => {
                         self.lang = self.lang.toggle();
@@ -503,18 +828,28 @@ impl App {
         let right = Vec2::new(1.0, 0.0);
         let up = Vec2::new(0.0, -1.0);
         let down = Vec2::new(0.0, 1.0);
-        let fourth: (&[Chip], &str) = if is_endless(self.lesson) {
-            (&[Chip::Arrow(down)], "слова / всё")
+        let items: Vec<(Vec<Chip>, &str)> = if self.screen == Screen::Start {
+            vec![
+                (vec![Chip::Arrow(left), Chip::Arrow(right)], "режим"),
+                (vec![Chip::Arrow(up), Chip::Arrow(down)], "выбор"),
+                (vec![Chip::Text("Enter")], "начать"),
+                (vec![Chip::Text("Tab")], "раскладка"),
+                (vec![Chip::Text("Esc")], "выход"),
+            ]
         } else {
-            (&[Chip::Text("Enter")], "ещё раз")
+            let fourth = if is_endless(self.lesson) {
+                (vec![Chip::Arrow(down)], "слова / всё")
+            } else {
+                (vec![Chip::Text("Enter")], "ещё раз")
+            };
+            vec![
+                (vec![Chip::Arrow(left), Chip::Arrow(right)], "урок"),
+                (vec![Chip::Arrow(up)], "другие слова"),
+                (vec![Chip::Text("Tab")], "раскладка"),
+                fourth,
+                (vec![Chip::Text("Esc")], "меню"),
+            ]
         };
-        let items: [(&[Chip], &str); 5] = [
-            (&[Chip::Arrow(left), Chip::Arrow(right)], "урок"),
-            (&[Chip::Arrow(up)], "другие слова"),
-            (&[Chip::Text("Tab")], "раскладка"),
-            fourth,
-            (&[Chip::Text("Esc")], "выход"),
-        ];
         let cell = bar.width() / items.len() as f32;
         let font = FontId::proportional(12.5);
         for (i, (chips, label)) in items.iter().enumerate() {
@@ -568,7 +903,31 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         fit_zoom(&ctx);
+        self.textures(&ctx);
+        if self.screen == Screen::Boot && self.boot.elapsed().as_secs_f32() >= BOOT_LEN {
+            self.go(Screen::Start);
+        }
         self.handle_input(&ctx);
+        let since = self.shown.elapsed().as_secs_f32() / FADE;
+        if since < 1.0 || self.screen == Screen::Boot {
+            ctx.request_repaint();
+        }
+        if self.screen != Screen::Practice {
+            let frame = egui::Frame::NONE.fill(P.bg);
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+                let full = ui.max_rect();
+                if self.screen == Screen::Boot {
+                    self.splash(ui, full);
+                } else {
+                    self.footer(ui, full);
+                    self.start(ui, full);
+                    if since < 1.0 {
+                        ui.painter().rect_filled(full, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - since));
+                    }
+                }
+            });
+            return;
+        }
         if self.typing() {
             ctx.request_repaint_after(Duration::from_millis(200));
         }
@@ -608,6 +967,9 @@ impl eframe::App for App {
             }
 
             self.menu(ui, full);
+            if since < 1.0 {
+                ui.painter().rect_filled(full, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - since));
+            }
         });
     }
 }
