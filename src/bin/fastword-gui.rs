@@ -100,7 +100,7 @@ const TEXT_FAMILY: &str = "text";
 const BUILTIN_FONT: &str = "IBM Plex Mono";
 const FONT_MIN: f32 = 14.0;
 const FONT_MAX: f32 = 32.0;
-const SETTINGS_ROWS: usize = 3;
+const SETTINGS_ROWS: usize = 5;
 
 fn fonts_dir() -> Option<std::path::PathBuf> {
     Some(state_path()?.with_file_name("fonts"))
@@ -119,27 +119,64 @@ fn scan_fonts() -> Vec<(String, std::path::PathBuf)> {
     out
 }
 
-fn load_settings() -> (f32, String) {
-    let text = state_path().and_then(|p| std::fs::read_to_string(p.with_file_name("settings")).ok()).unwrap_or_default();
-    let mut size = 20.0;
-    let mut font = BUILTIN_FONT.to_string();
-    for line in text.lines() {
-        if let Some(v) = line.strip_prefix("size ") {
-            size = v.trim().parse::<f32>().unwrap_or(20.0).clamp(FONT_MIN, FONT_MAX);
-        } else if let Some(v) = line.strip_prefix("font ") {
-            font = v.trim().to_string();
-        }
-    }
-    (size, font)
+#[derive(Debug, PartialEq)]
+struct Settings {
+    size: f32,
+    font: String,
+    show_keyboard: bool,
+    colored_keyboard: bool,
 }
 
-fn save_settings(size: f32, font: &str) {
+impl Settings {
+    fn parse(text: &str) -> Self {
+        let mut settings = Self {
+            size: 20.0,
+            font: BUILTIN_FONT.to_string(),
+            show_keyboard: true,
+            colored_keyboard: false,
+        };
+        for line in text.lines() {
+            if let Some(v) = line.strip_prefix("size ") {
+                if let Ok(size) = v.trim().parse::<f32>() {
+                    if size.is_finite() {
+                        settings.size = size.clamp(FONT_MIN, FONT_MAX);
+                    }
+                }
+            } else if let Some(v) = line.strip_prefix("font ") {
+                settings.font = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("keyboard ") {
+                settings.show_keyboard = v.trim() != "off";
+            } else if let Some(v) = line.strip_prefix("keyboard_colors ") {
+                settings.colored_keyboard = v.trim() == "on";
+            }
+        }
+        settings
+    }
+
+    fn encode(&self) -> String {
+        format!("size {:.0}\nfont {}\nkeyboard {}\nkeyboard_colors {}\n", self.size, self.font,
+            if self.show_keyboard { "on" } else { "off" },
+            if self.colored_keyboard { "on" } else { "off" })
+    }
+}
+
+fn load_settings() -> Settings {
+    let text = state_path().and_then(|p| std::fs::read_to_string(p.with_file_name("settings")).ok()).unwrap_or_default();
+    Settings::parse(&text)
+}
+
+fn save_settings(settings: &Settings) {
     if let Some(p) = state_path().map(|p| p.with_file_name("settings")) {
         if let Some(dir) = p.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(p, format!("size {size:.0}\nfont {font}\n"));
+        let _ = std::fs::write(p, settings.encode());
     }
+}
+
+fn finger_color(group: usize) -> Color32 {
+    [Color32::from_rgb(198, 120, 221), Color32::from_rgb(97, 175, 239),
+     Color32::from_rgb(152, 195, 121), P.warn, Color32::from_rgb(86, 182, 194)][group]
 }
 
 fn hatch(p: &egui::Painter, r: Rect, group: usize, color: Color32) {
@@ -222,6 +259,8 @@ struct App {
     dots: Option<egui::TextureHandle>,
     font_size: f32,
     font_name: String,
+    show_keyboard: bool,
+    colored_keyboard: bool,
     fonts: Vec<(String, std::path::PathBuf)>,
     fonts_dirty: bool,
 }
@@ -276,6 +315,7 @@ enum Chip {
 
 impl App {
     fn new(lang: Lang, kind: Kind) -> Self {
+        let settings = load_settings();
         let mut rng = Rng::new();
         let test = Test::for_kind(lang, kind, &mut rng);
         App {
@@ -293,8 +333,10 @@ impl App {
             tab: 0,
             pick: 0,
             grain: None,
-            font_size: load_settings().0,
-            font_name: load_settings().1,
+            font_size: settings.size,
+            font_name: settings.font,
+            show_keyboard: settings.show_keyboard,
+            colored_keyboard: settings.colored_keyboard,
             fonts: scan_fonts(),
             fonts_dirty: true,
             dots: None,
@@ -430,7 +472,7 @@ impl App {
 
         let area = Rect::from_min_max(Pos2::new(full.left(), full.top() + 56.0), Pos2::new(full.right(), full.bottom() - FOOTER));
         let box_w = (area.width() - 2.0 * MARGIN).min(780.0);
-        let box_h = 360.0;
+        let box_h = 420.0_f32.min(area.height() - 24.0);
         let frame = Rect::from_center_size(area.center(), Vec2::new(box_w, box_h));
         let btn_w = 260.0;
         let gap = 16.0;
@@ -438,7 +480,7 @@ impl App {
         let modes = [
             ("01 / MODE", "УРОКИ", format!("{} уроков · пары клавиш", PAIR_COUNT)),
             ("02 / MODE", "ТРЕНИРОВКИ", "фразы · всё подряд".to_string()),
-            ("03 / MODE", "НАСТРОЙКИ", "шрифт".to_string()),
+            ("03 / MODE", "НАСТРОЙКИ", "шрифт · клавиатура".to_string()),
         ];
         let mut new_tab = None;
         for (i, (tag, title, desc)) in modes.iter().enumerate() {
@@ -512,7 +554,7 @@ impl App {
                 ("Всё подряд".to_string(), mixed.to_string()),
             ]
         } else {
-            p.text(Pos2::new(list.left(), y - 6.0), Align2::LEFT_TOP, "Шрифт", FontId::proportional(15.0), P.text);
+            p.text(Pos2::new(list.left(), y - 6.0), Align2::LEFT_TOP, "Шрифт и клавиатура", FontId::proportional(15.0), P.text);
             y += 26.0;
             let current = self.fonts.iter().find(|(n, _)| *n == self.font_name).map_or(BUILTIN_FONT.to_string(), |(n, _)| n.clone());
             size_row = Some(Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width(), 36.0)));
@@ -526,6 +568,8 @@ impl App {
                 ("Размер текста".to_string(), String::new()),
                 ("Шрифт".to_string(), current),
                 ("Добавить шрифт".to_string(), "открыть папку".to_string()),
+                ("Клавиатура с подсказками".to_string(), if self.show_keyboard { "вкл" } else { "выкл" }.to_string()),
+                ("Цветная клавиатура".to_string(), if self.colored_keyboard { "вкл" } else { "выкл" }.to_string()),
             ]
         };
         for (i, (title, extra)) in rows.iter().enumerate() {
@@ -615,7 +659,9 @@ impl App {
                 self.font_name = names[(i + 1) % names.len()].clone();
                 self.fonts_dirty = true;
             }
-            _ => {
+            3 => self.show_keyboard = !self.show_keyboard,
+            4 => self.colored_keyboard = !self.colored_keyboard,
+            2 => {
                 if let Some(dir) = fonts_dir() {
                     let _ = std::fs::create_dir_all(&dir);
                     let opener = if cfg!(windows) { "explorer" } else if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
@@ -623,8 +669,15 @@ impl App {
                 }
                 self.fonts = scan_fonts();
             }
+            _ => return,
         }
-        save_settings(self.font_size, &self.font_name);
+        self.content_h = 0.0;
+        save_settings(&Settings {
+            size: self.font_size,
+            font: self.font_name.clone(),
+            show_keyboard: self.show_keyboard,
+            colored_keyboard: self.colored_keyboard,
+        });
     }
 
     fn apply_fonts(&mut self, ctx: &egui::Context) {
@@ -905,7 +958,11 @@ impl App {
         let x = r.center().x - total / 2.0;
         let swatch = Rect::from_min_size(Pos2::new(x, r.center().y - sw / 2.0), Vec2::splat(sw));
         let p = ui.painter();
-        hatch(p, swatch, f.group(), P.sub);
+        if self.colored_keyboard {
+            p.rect_filled(swatch, CornerRadius::ZERO, finger_color(f.group()));
+        } else {
+            hatch(p, swatch, f.group(), P.sub);
+        }
         p.rect_stroke(swatch, CornerRadius::ZERO, Stroke::new(1.0, P.line), StrokeKind::Inside);
         p.galley(Pos2::new(x + sw + 10.0, r.center().y - galley.size().y / 2.0), galley, P.text);
     }
@@ -913,15 +970,18 @@ impl App {
     fn key(&self, painter: &egui::Painter, kr: Rect, text: &str, group: usize, in_lesson: bool, is_hot: bool, size: f32) {
         let radius = CornerRadius::ZERO;
         let label = if is_hot {
-            painter.rect_filled(kr, radius, P.accent);
+            painter.rect_filled(kr, radius, if self.colored_keyboard { finger_color(group) } else { P.accent });
             P.bg
         } else if in_lesson {
             painter.rect_filled(kr, radius, P.bg);
-            hatch(painter, kr.shrink(1.0), group, P.hatch);
-            painter.rect_stroke(kr, radius, Stroke::new(1.0, P.text), StrokeKind::Inside);
-            let g = painter.layout_no_wrap(text.to_string(), FontId::proportional(size), P.text);
+            let color = if self.colored_keyboard { finger_color(group) } else { P.text };
+            if !self.colored_keyboard {
+                hatch(painter, kr.shrink(1.0), group, P.hatch);
+            }
+            painter.rect_stroke(kr, radius, Stroke::new(1.0, color), StrokeKind::Inside);
+            let g = painter.layout_no_wrap(text.to_string(), FontId::proportional(size), color);
             painter.rect_filled(Rect::from_center_size(kr.center(), g.size() + Vec2::new(4.0, 0.0)), radius, P.bg);
-            P.text
+            color
         } else {
             painter.rect_stroke(kr, radius, Stroke::new(1.0, P.surface.gamma_multiply(1.6)), StrokeKind::Inside);
             P.faint
@@ -975,6 +1035,40 @@ impl App {
         self.key(painter, sr, "пробел", Finger::Thumb.group(), true, next == Some(' '), 14.0);
     }
 
+    fn practice(&mut self, ui: &mut egui::Ui, col: Rect) -> egui::scroll_area::ScrollAreaOutput<()> {
+        let mut output = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(col));
+            output = Some(egui::ScrollArea::vertical()
+                .id_salt("practice")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let w = ui.available_width();
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.add_space(((col.height() - self.content_h) / 2.0).max(0.0));
+                    let top = ui.cursor().top();
+                    self.lesson_line(ui, w);
+                    ui.add_space(12.0);
+                    self.text(ui, w);
+                    ui.add_space(12.0);
+                    self.stats(ui);
+                    self.message(ui);
+                    if self.show_keyboard {
+                        ui.add_space(4.0);
+                        self.finger_hint(ui);
+                        ui.add_space(6.0);
+                        self.keyboard(ui);
+                    }
+                    let h = ui.min_rect().bottom() - top;
+                    if (h - self.content_h).abs() > 1.0 {
+                        self.content_h = h;
+                        ui.ctx().request_repaint();
+                    }
+                }));
+        });
+        output.unwrap()
+    }
+
     fn footer(&self, ui: &egui::Ui, full: Rect) {
         let bar = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - FOOTER), full.max);
         let p = ui.painter();
@@ -988,7 +1082,7 @@ impl App {
             vec![
                 (vec![Chip::Arrow(left), Chip::Arrow(right)], "режим"),
                 (vec![Chip::Arrow(up), Chip::Arrow(down)], "выбор"),
-                (vec![Chip::Text("Enter")], "начать"),
+                (vec![Chip::Text("Enter")], if self.tab == 2 { "изменить" } else { "начать" }),
                 (vec![Chip::Text("Tab")], "раскладка"),
                 (vec![Chip::Text("Esc")], "выход"),
             ]
@@ -1037,7 +1131,7 @@ impl App {
 }
 
 const BASE_W: f32 = 980.0;
-const BASE_H: f32 = 580.0;
+const BASE_H: f32 = 720.0;
 const COLUMN_MAX: f32 = 860.0;
 
 fn fit_zoom(ctx: &egui::Context) {
@@ -1100,32 +1194,98 @@ impl eframe::App for App {
             );
             let side = 2.0 * (MENU_W + 2.0 * MARGIN);
             let w = (area.width() - side).clamp(COLUMN, COLUMN_MAX).min(area.width() - 2.0 * MARGIN);
-            let top = area.top() + ((area.height() - self.content_h) / 2.0).max(0.0);
-            let col = Rect::from_min_size(Pos2::new(area.center().x - w / 2.0, top), Vec2::new(w, area.bottom() - top));
-            let resp = ui.scope_builder(egui::UiBuilder::new().max_rect(col), |ui| {
-                ui.set_width(w);
-                ui.spacing_mut().item_spacing.y = 6.0;
-                self.lesson_line(ui, w);
-                ui.add_space(12.0);
-                self.text(ui, w);
-                ui.add_space(12.0);
-                self.stats(ui);
-                self.message(ui);
-                ui.add_space(4.0);
-                self.finger_hint(ui);
-                ui.add_space(6.0);
-                self.keyboard(ui);
-            });
-            let h = resp.response.rect.height();
-            if (h - self.content_h).abs() > 1.0 {
-                self.content_h = h;
-                ctx.request_repaint();
-            }
+            let col = Rect::from_min_max(
+                Pos2::new(area.center().x - w / 2.0, area.top() + 8.0),
+                Pos2::new(area.center().x + w / 2.0, area.bottom() - 8.0),
+            );
+            self.practice(ui, col);
 
             if since < 1.0 {
                 ui.painter().rect_filled(full, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - since));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn settings_keep_old_fonts_and_roundtrip_keyboard_options() {
+        let old = Settings::parse("size 28\nfont My Font\n");
+        assert_eq!(old.size, 28.0);
+        assert_eq!(old.font, "My Font");
+        assert!(old.show_keyboard);
+        assert!(!old.colored_keyboard);
+        let changed = Settings { show_keyboard: false, colored_keyboard: true, ..old };
+        assert_eq!(Settings::parse(&changed.encode()), changed);
+        assert_eq!(Settings::parse("size NaN\n").size, 20.0);
+    }
+
+    #[test]
+    fn practice_fits_above_footer_with_keyboard_and_all_font_sizes() {
+        for size in [Vec2::new(980.0, 640.0), Vec2::new(760.0, 600.0), Vec2::new(1920.0, 1136.0)] {
+            for lang in [Lang::Ru, Lang::En] {
+                for font_size in [14.0, 20.0, 24.0, 26.0, 32.0] {
+                    let ctx = egui::Context::default();
+                    let mut app = App::new(lang, Kind::Lesson(4));
+                    app.font_size = font_size;
+                    app.show_keyboard = true;
+                    app.apply_fonts(&ctx);
+                    let mut content = Vec2::ZERO;
+                    let mut viewport = Rect::NOTHING;
+                    for _ in 0..5 {
+                        let zoom = ctx.zoom_factor();
+                        let input = egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size / zoom)),
+                            ..Default::default()
+                        };
+                        let output = ctx.run_ui(input, |ui| {
+                            fit_zoom(&ctx);
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ui, |ui| {
+                                let full = ui.max_rect();
+                                let w = COLUMN.min(full.width() - 2.0 * MARGIN);
+                                let col = Rect::from_min_max(
+                                    Pos2::new(full.center().x - w / 2.0, full.top() + TOP_BAR + 8.0),
+                                    Pos2::new(full.center().x + w / 2.0, full.bottom() - FOOTER - 8.0),
+                                );
+                                let result = app.practice(ui, col);
+                                content = result.content_size;
+                                viewport = result.inner_rect;
+                                assert!(viewport.bottom() <= full.bottom() - FOOTER);
+                            });
+                        });
+                        output.drop_without_applying_deltas();
+                    }
+                    assert!(content.y <= viewport.height() + 1.0,
+                        "size={size:?} font={font_size}: content={content:?} viewport={viewport:?}");
+                    assert!(content.x <= viewport.width() + 1.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn hiding_keyboard_removes_keys_and_finger_hint_from_practice() {
+        let ctx = egui::Context::default();
+        let mut app = App::new(Lang::Ru, Kind::Lesson(4));
+        app.apply_fonts(&ctx);
+        let mut heights = Vec::new();
+        for show in [true, false] {
+            app.show_keyboard = show;
+            app.content_h = 0.0;
+            let output = ctx.run_ui(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(980.0, 720.0))),
+                ..Default::default()
+            }, |ui| {
+                let col = Rect::from_min_size(Pos2::new(200.0, 64.0), Vec2::new(580.0, 604.0));
+                app.practice(ui, col);
+            });
+            heights.push(app.content_h);
+            output.drop_without_applying_deltas();
+        }
+        assert!(heights[0] - heights[1] >= 220.0, "{heights:?}");
     }
 }
 
