@@ -267,11 +267,12 @@ pub enum Kind {
     Lesson(usize),
     Phrases(bool),
     Mixed(bool),
+    Code(bool),
 }
 
 impl Kind {
     pub fn endless(self) -> bool {
-        matches!(self, Kind::Phrases(true) | Kind::Mixed(true))
+        matches!(self, Kind::Phrases(true) | Kind::Mixed(true) | Kind::Code(true))
     }
 }
 
@@ -286,6 +287,7 @@ pub fn load_gui_state() -> (Lang, Kind) {
     let endless = parts.next() == Some("inf");
     let kind = match tag {
         Some("phrases") => Kind::Phrases(endless),
+        Some("code") => Kind::Code(endless),
         Some("mixed") => Kind::Mixed(endless),
         s => Kind::Lesson(s.and_then(|s| s.parse::<usize>().ok()).filter(|&n| n < PAIR_COUNT).unwrap_or(0)),
     };
@@ -296,6 +298,7 @@ pub fn save_gui_state(lang: Lang, kind: Kind) {
     let kind = match kind {
         Kind::Lesson(i) => i.to_string(),
         Kind::Phrases(e) => format!("phrases {}", if e { "inf" } else { "fin" }),
+        Kind::Code(e) => format!("code {}", if e { "inf" } else { "fin" }),
         Kind::Mixed(e) => format!("mixed {}", if e { "inf" } else { "fin" }),
     };
     write_file(state_file("gui"), format!("{} {kind}\n", lang_tag(lang)));
@@ -536,12 +539,29 @@ pub struct Test {
     pub keystrokes: usize,
     pub mistakes: usize,
     pub wrong_layout: bool,
+    pub blocked_error: bool,
     pub endless: bool,
     pub last_key: Option<Instant>,
     pub idle: Duration,
     pub mix: Option<Mix>,
     pub phrases: bool,
     pub blend: bool,
+    pub code: bool,
+}
+
+fn code_sample(rng: &mut Rng) -> Vec<char> {
+    let samples = [
+        "values = [n * n for n in range(8)]",
+        "total = sum(x for x in scores if x > 0)",
+        "names = sorted(items, key=str.lower)",
+        "let sum: i32 = values.iter().sum();",
+        "let pair = (width + gap, height);",
+        "let label = format!(\"{} px\", size);",
+        "const names = items.map(item => item.name);",
+        "const even = nums.filter(n => n % 2 === 0);",
+        "const point = { x: 12, y: 24 };",
+    ];
+    samples[rng.below(samples.len())].chars().collect()
 }
 
 impl Test {
@@ -564,6 +584,12 @@ impl Test {
                 t.endless = true;
                 t.blend = true;
                 t
+            }
+            Kind::Code(endless) => {
+                let mut test = Test::new(code_sample(rng));
+                test.code = true;
+                test.endless = endless;
+                test
             }
             Kind::Mixed(endless) => {
                 let mut t = Test::new(make_endless(lang, Mix::All, rng));
@@ -593,6 +619,7 @@ impl Test {
         if self.endless && self.target.len() - self.typed.len().min(self.target.len()) < ENDLESS_AHEAD {
             self.target.push(' ');
             let more = match self.mix {
+                _ if self.code => code_sample(rng),
                 _ if self.phrases => make_phrases(lang, rng),
                 _ if self.blend => make_blend(lang, rng),
                 Some(mix) => make_endless(lang, mix, rng),
@@ -615,12 +642,14 @@ impl Test {
             keystrokes: 0,
             mistakes: 0,
             wrong_layout: false,
+            blocked_error: false,
             endless: false,
             last_key: None,
             idle: Duration::ZERO,
             mix: None,
             phrases: false,
             blend: false,
+            code: false,
         }
     }
 
@@ -629,6 +658,10 @@ impl Test {
     }
 
     pub fn type_char(&mut self, c: char, lang: Lang) {
+        self.type_char_with_stop(c, lang, false);
+    }
+
+    pub fn type_char_with_stop(&mut self, c: char, lang: Lang, stop_on_error: bool) {
         if self.done() || self.typed.len() >= self.target.len() {
             return;
         }
@@ -646,6 +679,10 @@ impl Test {
             self.mistakes += 1;
         }
         self.wrong_layout = !ok && lang.is_foreign(c);
+        self.blocked_error = stop_on_error && !ok;
+        if self.blocked_error {
+            return;
+        }
         self.typed.push(c);
         if !self.endless && self.typed.len() == self.target.len() {
             self.finished = Some(now);
@@ -656,6 +693,7 @@ impl Test {
         if !self.done() {
             self.typed.pop();
             self.wrong_layout = false;
+            self.blocked_error = false;
         }
     }
 
@@ -893,11 +931,29 @@ mod tests {
         assert_eq!(ru[2], Some(b(150)));
         assert_eq!(ru[0], None);
         assert_eq!(load_results(Lang::En)[2], Some(b(40)));
-        for (lang, kind) in [(Lang::En, Kind::Lesson(0)), (Lang::Ru, Kind::Lesson(7)), (Lang::Ru, Kind::Phrases(false)), (Lang::En, Kind::Mixed(true)), (Lang::Ru, Kind::Phrases(true))] {
+        for (lang, kind) in [(Lang::En, Kind::Lesson(0)), (Lang::Ru, Kind::Lesson(7)), (Lang::Ru, Kind::Phrases(false)), (Lang::En, Kind::Mixed(true)), (Lang::Ru, Kind::Phrases(true)), (Lang::En, Kind::Code(true)), (Lang::En, Kind::Code(false))] {
             save_gui_state(lang, kind);
             assert_eq!(load_gui_state(), (lang, kind));
         }
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn code_practice_finishes_or_extends_with_printable_code() {
+        let mut rng = Rng(17);
+        for endless in [false, true] {
+            let mut test = Test::for_kind(Lang::En, Kind::Code(endless), &mut rng);
+            let sample = test.target.clone();
+            assert!(sample.iter().any(|c| c.is_ascii_punctuation()));
+            for c in &sample {
+                assert!(c.is_ascii_graphic() || *c == ' ');
+                test.type_char_with_stop(*c, Lang::En, true);
+                test.top_up(Lang::En, &mut rng);
+            }
+            assert_eq!(test.done(), !endless);
+            assert_eq!(test.target.len() > sample.len(), endless);
+            assert_eq!(test.mistakes, 0);
+        }
     }
 
     #[test]
@@ -943,5 +999,46 @@ mod tests {
         for w in EN_WORDS.split_whitespace() {
             assert!(w.chars().all(|c| c.is_ascii_lowercase()), "en: {w}");
         }
+    }
+}
+
+#[cfg(test)]
+mod stop_on_error_tests {
+    use super::*;
+
+    #[test]
+    fn rejected_keys_count_without_advancing_or_finishing() {
+        let mut t = Test::new("а ".chars().collect());
+        t.type_char_with_stop('x', Lang::Ru, true);
+        assert!(t.typed.is_empty());
+        assert!(t.wrong_layout);
+        assert!(t.blocked_error);
+        assert!(t.started.is_some());
+        t.type_char_with_stop('ф', Lang::Ru, true);
+        t.type_char_with_stop('а', Lang::Ru, true);
+        assert_eq!(t.typed, vec!['а']);
+        assert!(!t.wrong_layout);
+        assert!(!t.blocked_error);
+        t.type_char_with_stop('а', Lang::Ru, true);
+        assert!(!t.done());
+        assert!(t.blocked_error);
+        t.type_char_with_stop(' ', Lang::Ru, true);
+        assert!(t.done());
+        assert!(!t.blocked_error);
+        assert_eq!(t.mistakes, 3);
+        assert_eq!(t.keystrokes, 5);
+        assert_eq!(t.correct(), 2);
+    }
+
+    #[test]
+    fn disabled_stop_keeps_free_typing_and_backspace() {
+        let mut t = Test::new("ab".chars().collect());
+        t.type_char('x', Lang::En);
+        assert_eq!(t.typed, vec!['x']);
+        t.backspace();
+        t.type_char_with_stop('a', Lang::En, true);
+        t.backspace();
+        assert!(t.typed.is_empty());
+        assert_eq!(t.mistakes, 1);
     }
 }

@@ -100,7 +100,7 @@ const TEXT_FAMILY: &str = "text";
 const BUILTIN_FONT: &str = "IBM Plex Mono";
 const FONT_MIN: f32 = 14.0;
 const FONT_MAX: f32 = 32.0;
-const SETTINGS_ROWS: usize = 5;
+const SETTINGS_ROWS: usize = 6;
 
 fn fonts_dir() -> Option<std::path::PathBuf> {
     Some(state_path()?.with_file_name("fonts"))
@@ -125,6 +125,7 @@ struct Settings {
     font: String,
     show_keyboard: bool,
     colored_keyboard: bool,
+    stop_on_error: bool,
 }
 
 impl Settings {
@@ -134,6 +135,7 @@ impl Settings {
             font: BUILTIN_FONT.to_string(),
             show_keyboard: true,
             colored_keyboard: false,
+            stop_on_error: false,
         };
         for line in text.lines() {
             if let Some(v) = line.strip_prefix("size ") {
@@ -148,15 +150,18 @@ impl Settings {
                 settings.show_keyboard = v.trim() != "off";
             } else if let Some(v) = line.strip_prefix("keyboard_colors ") {
                 settings.colored_keyboard = v.trim() == "on";
+            } else if let Some(v) = line.strip_prefix("stop_on_error ") {
+                settings.stop_on_error = v.trim() == "on";
             }
         }
         settings
     }
 
     fn encode(&self) -> String {
-        format!("size {:.0}\nfont {}\nkeyboard {}\nkeyboard_colors {}\n", self.size, self.font,
+        format!("size {:.0}\nfont {}\nkeyboard {}\nkeyboard_colors {}\nstop_on_error {}\n", self.size, self.font,
             if self.show_keyboard { "on" } else { "off" },
-            if self.colored_keyboard { "on" } else { "off" })
+            if self.colored_keyboard { "on" } else { "off" },
+            if self.stop_on_error { "on" } else { "off" })
     }
 }
 
@@ -236,9 +241,9 @@ const MARGIN: f32 = 20.0;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Screen {
-    Boot,
     Start,
     Practice,
+    History,
 }
 
 struct App {
@@ -247,26 +252,23 @@ struct App {
     train_endless: bool,
     results: Vec<Option<Best>>,
     saved: bool,
+    history: String,
     rng: Rng,
     test: Test,
     content_h: f32,
     screen: Screen,
-    boot: Instant,
     shown: Instant,
     tab: usize,
     pick: usize,
     grain: Option<egui::TextureHandle>,
-    dots: Option<egui::TextureHandle>,
     font_size: f32,
     font_name: String,
     show_keyboard: bool,
     colored_keyboard: bool,
+    stop_on_error: bool,
     fonts: Vec<(String, std::path::PathBuf)>,
     fonts_dirty: bool,
 }
-
-const BOOT_LEN: f32 = 2.6;
-const FADE: f32 = 0.35;
 
 fn hash(x: u32, y: u32, seed: u32) -> f32 {
     let mut h = x.wrapping_mul(374761393) ^ y.wrapping_mul(668265263) ^ seed.wrapping_mul(2246822519);
@@ -288,24 +290,50 @@ fn grain_image() -> egui::ColorImage {
 }
 
 fn dots_image() -> egui::ColorImage {
-    let (w, h) = (480usize, 320usize);
-    let g = |u: f32, v: f32, cu: f32, cv: f32, su: f32, sv: f32| (-((u - cu).powi(2) / su + (v - cv).powi(2) / sv)).exp();
-    let mut px = Vec::with_capacity(w * h * 4);
-    for y in 0..h {
-        for x in 0..w {
-            let u = x as f32 / w as f32;
-            let v = y as f32 / h as f32;
-            let blob = g(u, v, 0.52, 0.42, 0.035, 0.07);
-            let side = 0.65 * g(u, v, 0.88, 0.78, 0.02, 0.03);
-            let d = v - (1.05 - 0.95 * u);
-            let ridge = 0.75 * (-(d * d) / 0.004).exp() * ((u - 0.2) / 0.4).clamp(0.0, 1.0);
-            let f = (blob.max(side).max(ridge) * 0.92).min(1.0);
-            let on = hash(x as u32, y as u32, 3) < f.powf(2.1);
-            let c = (90.0 + 130.0 * f) as u8;
-            px.extend_from_slice(&if on { [c, c, c, 255] } else { [0, 0, 0, 0] });
+    let mut image = egui::ColorImage::filled([640, 420], Color32::TRANSPARENT);
+    let mut plot = |x: f32, y: f32, light: f32| {
+        let x = x.round() as isize;
+        let y = y.round() as isize;
+        if (0..640).contains(&x) && (0..420).contains(&y) {
+            let pixel = &mut image[(x as usize, y as usize)];
+            let alpha = (light.clamp(0.0, 1.0) * 255.0) as u8;
+            if alpha > pixel.a() {
+                *pixel = Color32::from_white_alpha(alpha);
+            }
+        }
+    };
+    for rib in 0..19 {
+        let t = (rib as f32 + 0.55) / 19.0;
+        let radius = (std::f32::consts::PI * t).sin().powf(0.72);
+        let axis_x = 190.0 + 275.0 * t;
+        let axis_y = 314.0 - 221.0 * t;
+        for side in [-1.0_f32, 1.0] {
+            for step in 0..420 {
+                let u = step as f32 / 419.0;
+                let arc = (u * 2.58).sin();
+                let bend = side * radius * arc;
+                let x = axis_x + 100.0 * bend + 18.0 * u;
+                let y = axis_y + 74.0 * bend - 70.0 * radius * u;
+                let depth = (0.64 + 0.30 * side) * (1.0 - 0.65 * u.powi(2));
+                for grain in 0..4 {
+                    let seed = rib * 8 + grain;
+                    let spread = 1.4 + 6.0 * u;
+                    let dx = (hash(step, seed, 3) - 0.5) * spread;
+                    let dy = (hash(step, seed, 8) - 0.5) * spread;
+                    plot(x + dx, y + dy, depth * hash(step, seed, 15));
+                }
+                if step % 71 == 23 && rib % 2 == 0 {
+                    for offset in -2..=2 {
+                        plot(x + offset as f32, y, depth);
+                        if rib % 4 == 0 {
+                            plot(x, y + offset as f32, depth);
+                        }
+                    }
+                }
+            }
         }
     }
-    egui::ColorImage::from_rgba_unmultiplied([w, h], &px)
+    image
 }
 
 enum Chip {
@@ -318,28 +346,29 @@ impl App {
         let settings = load_settings();
         let mut rng = Rng::new();
         let test = Test::for_kind(lang, kind, &mut rng);
+        let (tab, pick) = Self::menu_selection(kind);
         App {
             lang,
             kind,
             train_endless: kind.endless(),
             results: load_results(lang),
             saved: false,
+            history: String::new(),
             rng,
             test,
             content_h: 0.0,
-            screen: Screen::Boot,
-            boot: Instant::now(),
+            screen: Screen::Start,
             shown: Instant::now(),
-            tab: 0,
-            pick: 0,
+            tab,
+            pick,
             grain: None,
             font_size: settings.size,
             font_name: settings.font,
             show_keyboard: settings.show_keyboard,
             colored_keyboard: settings.colored_keyboard,
+            stop_on_error: settings.stop_on_error,
             fonts: scan_fonts(),
             fonts_dirty: true,
-            dots: None,
         }
     }
 
@@ -347,18 +376,23 @@ impl App {
         self.screen = screen;
         self.shown = Instant::now();
         if screen == Screen::Start {
-            (self.tab, self.pick) = match self.kind {
-                Kind::Lesson(i) => (0, i),
-                Kind::Phrases(_) => (1, 0),
-                Kind::Mixed(_) => (1, 1),
-            };
+            (self.tab, self.pick) = Self::menu_selection(self.kind);
+        }
+    }
+
+    fn menu_selection(kind: Kind) -> (usize, usize) {
+        match kind {
+            Kind::Lesson(i) => (0, i),
+            Kind::Phrases(_) => (1, 0),
+            Kind::Mixed(_) => (1, 1),
+            Kind::Code(_) => (1, 2),
         }
     }
 
     fn picks(&self) -> usize {
         match self.tab {
             0 => PAIR_COUNT,
-            1 => 2,
+            1 => 4,
             2 => SETTINGS_ROWS,
             _ => 0,
         }
@@ -369,6 +403,15 @@ impl App {
             (0, i) => Kind::Lesson(i.min(PAIR_COUNT - 1)),
             (1, 0) => Kind::Phrases(self.train_endless),
             (1, 1) => Kind::Mixed(self.train_endless),
+            (1, 2) => {
+                self.lang = Lang::En;
+                Kind::Code(self.train_endless)
+            }
+            (1, 3) => {
+                self.history = state_path().and_then(|p| std::fs::read_to_string(p.with_file_name("history.tsv")).ok()).unwrap_or_default();
+                self.go(Screen::History);
+                return;
+            }
             (2, i) => {
                 self.setting(i, 1);
                 return;
@@ -383,79 +426,18 @@ impl App {
         if self.grain.is_none() {
             self.grain = Some(ctx.load_texture("grain", grain_image(), egui::TextureOptions::NEAREST_REPEAT));
         }
-        if self.dots.is_none() {
-            self.dots = Some(ctx.load_texture("dots", dots_image(), egui::TextureOptions::NEAREST));
-        }
     }
 
-    fn draw_grain(&self, p: &egui::Painter, r: Rect, now: f32) {
+    fn draw_grain(&self, p: &egui::Painter, r: Rect) {
         if let Some(tex) = &self.grain {
-            let k = (now * 12.0) as u32;
-            let off = Vec2::new(hash(k, 1, 9), hash(k, 2, 9));
-            let uv = Rect::from_min_size(off.to_pos2(), r.size() / 256.0);
+            let off = Pos2::new(hash(0, 1, 9), hash(0, 2, 9));
+            let uv = Rect::from_min_size(off, r.size() / 256.0);
             p.image(tex.id(), r, uv, Color32::WHITE);
         }
     }
 
-    fn draw_dots(&self, p: &egui::Painter, r: Rect, now: f32, alpha: f32) {
-        if let Some(tex) = &self.dots {
-            let drift = (now * 0.02).min(0.06);
-            let uv = Rect::from_min_max(Pos2::new(drift, drift * 0.5), Pos2::new(1.0 - 0.06 + drift, 1.0 - 0.03 + drift * 0.5));
-            p.image(tex.id(), r, uv, Color32::WHITE.gamma_multiply(alpha));
-        }
-    }
-
-    fn splash(&self, ui: &egui::Ui, full: Rect) {
-        let p = ui.painter().clone();
-        let now = self.boot.elapsed().as_secs_f32();
-        let frac = (now / BOOT_LEN).min(1.0);
-        let fade_in = (now / 0.5).min(1.0);
-        let light = Color32::from_gray(0xc8);
-        {
-            let x0 = full.left() + full.width() * 0.30;
-            let r = Rect::from_min_max(Pos2::new(x0, full.top()), full.max);
-            self.draw_dots(&p, r, now, fade_in * 0.55);
-            let edge = 140.0;
-            for i in 0..28 {
-                let k = i as f32 / 28.0;
-                let band = Rect::from_min_size(Pos2::new(x0 + k * edge, full.top()), Vec2::new(edge / 28.0 + 1.0, full.height()));
-                p.rect_filled(band, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - k));
-            }
-        }
-        {
-            let frame = Rect::from_center_size(full.center(), Vec2::new((full.width() - 120.0).min(860.0), 420.0));
-            let sub = P.sub.gamma_multiply(fade_in);
-            let small = FontId::monospace(12.0);
-            p.text(frame.left_top(), Align2::LEFT_TOP, format!("Ver /\nV.{}", env!("CARGO_PKG_VERSION")), small.clone(), sub);
-            p.text(frame.left_top() + Vec2::new(150.0, 18.0), Align2::LEFT_TOP, "TOUCH TYPING TRAINER", FontId::monospace(13.0), sub);
-            p.text(frame.right_top() + Vec2::new(0.0, 18.0), Align2::RIGHT_TOP, self.lang.label(), FontId::monospace(13.0), P.text.gamma_multiply(fade_in));
-
-            let word = "FastWord";
-            let big = FontId::monospace(118.0);
-            let typed = (((now - 0.3) / 0.16).floor() + 1.0).clamp(0.0, word.len() as f32) as usize;
-            let cw = p.layout_no_wrap("M".into(), big.clone(), light).size().x;
-            let wx = frame.left() - 6.0;
-            let wy = frame.center().y;
-            for (i, ch) in word.chars().take(typed).enumerate() {
-                p.text(Pos2::new(wx + i as f32 * cw, wy), Align2::LEFT_CENTER, ch, big.clone(), light);
-            }
-            if (now * 2.5) as i32 % 2 == 0 && now < BOOT_LEN - 0.3 {
-                let cur = Rect::from_min_size(Pos2::new(wx + typed as f32 * cw + 4.0, wy - 46.0), Vec2::new(cw * 0.55, 96.0));
-                p.rect_filled(cur, CornerRadius::ZERO, light);
-            }
-
-            let by = frame.bottom() - 40.0;
-            p.text(Pos2::new(frame.left(), by), Align2::LEFT_TOP, "© 2026 DISTREC\nALL KEYS RESERVED.", small.clone(), sub);
-            p.text(Pos2::new(frame.right(), by), Align2::RIGHT_TOP, format!("{:03}%", (frac * 100.0) as u32), small.clone(), P.text.gamma_multiply(fade_in));
-            let len = 16.0 + (frame.width() - 16.0) * frac;
-            p.hline(frame.left()..=(frame.left() + len), frame.bottom() + 6.0, Stroke::new(1.0, P.text));
-        }
-        self.draw_grain(&p, full, now);
-    }
-
     fn start(&mut self, ui: &mut egui::Ui, full: Rect) {
         let p = ui.painter().clone();
-        let now = self.shown.elapsed().as_secs_f32();
         self.logo(ui, full);
         let mut new_lang = None;
         for (i, lang) in [Lang::Ru, Lang::En].into_iter().enumerate() {
@@ -474,41 +456,39 @@ impl App {
         let box_w = (area.width() - 2.0 * MARGIN).min(780.0);
         let box_h = 420.0_f32.min(area.height() - 24.0);
         let frame = Rect::from_center_size(area.center(), Vec2::new(box_w, box_h));
-        let btn_w = 260.0;
-        let gap = 16.0;
-        let btn_h = (box_h - 2.0 * gap) / 3.0;
+        let btn_w = (box_w * 0.36).min(272.0);
+        let gap = 10.0;
+        let btn_h = 84.0_f32.min((box_h - 2.0 * gap) / 3.0);
+        let menu_y = frame.center().y - (3.0 * btn_h + 2.0 * gap) / 2.0;
         let modes = [
-            ("01 / MODE", "УРОКИ", format!("{} уроков · пары клавиш", PAIR_COUNT)),
-            ("02 / MODE", "ТРЕНИРОВКИ", "фразы · всё подряд".to_string()),
-            ("03 / MODE", "НАСТРОЙКИ", "шрифт · клавиатура".to_string()),
+            ("УРОКИ", "Пары клавиш"),
+            ("ТРЕНИРОВКИ", "Фразы и слова"),
+            ("НАСТРОЙКИ", "Шрифт и клавиатура"),
         ];
         let mut new_tab = None;
-        for (i, (tag, title, desc)) in modes.iter().enumerate() {
-            let r = Rect::from_min_size(Pos2::new(frame.left(), frame.top() + i as f32 * (btn_h + gap)), Vec2::new(btn_w, btn_h));
-            let resp = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::CLICK);
-            let on = self.tab == i;
-            let border = if on { P.text } else if resp.hovered() { P.dim } else { P.line };
-            p.rect_stroke(r, CornerRadius::ZERO, Stroke::new(1.0, border), StrokeKind::Inside);
-            let inner = r.shrink(18.0);
-            p.text(inner.left_top(), Align2::LEFT_TOP, *tag, FontId::monospace(10.5), P.dim);
-            let mark = Rect::from_min_size(Pos2::new(inner.right() - 8.0, inner.top() + 2.0), Vec2::splat(8.0));
-            if on {
-                p.rect_filled(mark, CornerRadius::ZERO, P.text);
-            } else {
-                p.rect_stroke(mark, CornerRadius::ZERO, Stroke::new(1.0, P.line), StrokeKind::Inside);
+        let spine_x = frame.left() + 2.0;
+        let first_y = menu_y + btn_h / 2.0;
+        p.vline(spine_x, first_y..=first_y + 2.0 * (btn_h + gap), Stroke::new(1.0, P.line));
+        for (i, (title, description)) in modes.iter().enumerate() {
+            let r = Rect::from_min_size(Pos2::new(spine_x + 18.0, menu_y + i as f32 * (btn_h + gap)), Vec2::new(btn_w - 20.0, btn_h));
+            let response = ui.interact(r, ui.scope_id().with(("mode", i)), Sense::CLICK);
+            let selected = self.tab == i;
+            let ink = if selected || response.hovered() { P.text } else { P.sub };
+            p.hline(spine_x..=r.left(), r.center().y, Stroke::new(1.0, if selected { P.sub } else { P.line }));
+            if selected {
+                p.rect_filled(r, CornerRadius::ZERO, P.surface);
+                p.vline(r.left(), r.top()..=r.bottom(), Stroke::new(1.0, P.text));
             }
-            p.text(inner.left_center() + Vec2::new(0.0, -4.0), Align2::LEFT_CENTER, *title, FontId::monospace(24.0), if on || resp.hovered() { P.text } else { P.dim });
-            p.text(inner.left_bottom(), Align2::LEFT_BOTTOM, desc, FontId::monospace(11.5), P.dim);
-            if on {
-                p.text(inner.right_bottom(), Align2::RIGHT_BOTTOM, "→", FontId::monospace(16.0), P.text);
-            }
-            if resp.clicked() {
+            p.text(r.left_center() + Vec2::new(14.0, -8.0), Align2::LEFT_CENTER, *title, FontId::monospace(19.0), ink);
+            p.text(r.left_center() + Vec2::new(14.0, 13.0), Align2::LEFT_CENTER, *description, FontId::monospace(12.0), P.sub);
+            p.hline(r.x_range(), r.bottom(), Stroke::new(1.0, P.line));
+            if response.clicked() {
                 new_tab = Some(i);
             }
         }
 
         let list = Rect::from_min_max(Pos2::new(frame.left() + btn_w + 48.0, frame.top()), frame.max);
-        let btn_mid = frame.top() + self.tab as f32 * (btn_h + gap) + btn_h / 2.0;
+        let btn_mid = menu_y + self.tab as f32 * (btn_h + gap) + btn_h / 2.0;
         let head_y = list.top() + 7.0;
         let jx = frame.left() + btn_w + 24.0;
         let s = Stroke::new(1.0, P.dim);
@@ -517,7 +497,7 @@ impl App {
         p.hline(jx..=(list.left() - 6.0), head_y, s);
         p.circle_filled(Pos2::new(list.left() - 6.0, head_y), 2.5, P.text);
 
-        let label = ["LESSONS", "TRAINING", "SETTINGS"][self.tab];
+        let label = ["ПАРЫ КЛАВИШ", "ТРЕНИРОВКИ", "НАСТРОЙКИ"][self.tab];
         section(&p, list.left(), list.right(), list.top(), label, P.dim, P.line);
         let mut clicked = None;
         let mut y = list.top() + 30.0;
@@ -552,6 +532,8 @@ impl App {
             vec![
                 ("Фразы".to_string(), phrases.to_string()),
                 ("Всё подряд".to_string(), mixed.to_string()),
+                ("Код".to_string(), "Python · Rust · JavaScript".to_string()),
+                ("Результаты".to_string(), "история занятий".to_string()),
             ]
         } else {
             p.text(Pos2::new(list.left(), y - 6.0), Align2::LEFT_TOP, "Шрифт и клавиатура", FontId::proportional(15.0), P.text);
@@ -570,6 +552,7 @@ impl App {
                 ("Добавить шрифт".to_string(), "открыть папку".to_string()),
                 ("Клавиатура с подсказками".to_string(), if self.show_keyboard { "вкл" } else { "выкл" }.to_string()),
                 ("Цветная клавиатура".to_string(), if self.colored_keyboard { "вкл" } else { "выкл" }.to_string()),
+                ("Остановка на ошибке".to_string(), if self.stop_on_error { "вкл" } else { "выкл" }.to_string()),
             ]
         };
         for (i, (title, extra)) in rows.iter().enumerate() {
@@ -639,7 +622,7 @@ impl App {
             self.pick = i;
             self.launch();
         }
-        self.draw_grain(&p, full, now * 0.0);
+        self.draw_grain(&p, full);
     }
 
     fn text_font(&self) -> FontId {
@@ -661,6 +644,7 @@ impl App {
             }
             3 => self.show_keyboard = !self.show_keyboard,
             4 => self.colored_keyboard = !self.colored_keyboard,
+            5 => self.stop_on_error = !self.stop_on_error,
             2 => {
                 if let Some(dir) = fonts_dir() {
                     let _ = std::fs::create_dir_all(&dir);
@@ -677,18 +661,12 @@ impl App {
             font: self.font_name.clone(),
             show_keyboard: self.show_keyboard,
             colored_keyboard: self.colored_keyboard,
+            stop_on_error: self.stop_on_error,
         });
     }
 
     fn apply_fonts(&mut self, ctx: &egui::Context) {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "IBMPlexMono".into(),
-            std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"))),
-        );
-        for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
-            fonts.families.entry(family).or_default().insert(0, "IBMPlexMono".into());
-        }
+        let mut fonts = base_fonts();
         let mut text = vec!["IBMPlexMono".to_string()];
         if let Some((name, path)) = self.fonts.iter().find(|(n, _)| *n == self.font_name) {
             if let Ok(bytes) = std::fs::read(path) {
@@ -713,13 +691,25 @@ impl App {
     }
 
     fn record(&mut self) {
-        let Kind::Lesson(lesson) = self.kind else { return };
         if self.saved || !self.test.done() {
             return;
         }
         self.saved = true;
         let t = &self.test;
         let best = Best { cpm: t.cpm().round() as u32, secs: t.elapsed().as_secs() as u32, acc: t.accuracy().round() as u32 };
+        let mode = match self.kind {
+            Kind::Lesson(i) => format!("Урок {}", i + 1),
+            Kind::Phrases(_) => "Фразы".into(),
+            Kind::Mixed(_) => "Всё подряд".into(),
+            Kind::Code(_) => "Код".into(),
+        };
+        if let Some(path) = state_path() {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path.with_file_name("history.tsv")) {
+                let _ = writeln!(file, "{}\t{}\t{}\t{}\t{}", mode, self.lang.label(), best.cpm, best.acc, best.secs);
+            }
+        }
+        let Kind::Lesson(lesson) = self.kind else { return };
         if save_result(self.lang, lesson, best) {
             self.results = load_results(self.lang);
         }
@@ -731,16 +721,6 @@ impl App {
 
     fn handle_input(&mut self, ctx: &egui::Context) {
         let events = ctx.input(|i| i.events.clone());
-        if self.screen == Screen::Boot {
-            for e in &events {
-                match e {
-                    egui::Event::Key { key: Key::Escape, pressed: true, .. } => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-                    egui::Event::Key { pressed: true, .. } | egui::Event::PointerButton { pressed: true, .. } => self.go(Screen::Start),
-                    _ => {}
-                }
-            }
-            return;
-        }
         if self.screen == Screen::Start {
             for e in events {
                 if let egui::Event::Key { key, pressed: true, .. } = e {
@@ -774,7 +754,7 @@ impl App {
             match e {
                 egui::Event::Text(t) => {
                     for c in t.chars().filter(|c| !c.is_control()) {
-                        self.test.type_char(c, self.lang);
+                        self.test.type_char_with_stop(c, self.lang, self.stop_on_error);
                         self.test.top_up(self.lang, &mut self.rng);
                     }
                     self.record();
@@ -880,9 +860,18 @@ impl App {
                         p.hline(cell.left()..=cell.right(), uy, Stroke::new(2.0, P.error));
                     }
                 } else if i == t.typed.len() {
-                    color = P.bg;
                     let cursor = Rect::from_min_size(Pos2::new(x, y + 2.0), Vec2::new(cw, line_h - 4.0));
-                    p.rect_filled(cursor, CornerRadius::ZERO, P.accent);
+                    if t.blocked_error {
+                        p.rect_stroke(cursor, CornerRadius::ZERO, Stroke::new(1.0, P.accent), StrokeKind::Inside);
+                        color = P.error;
+                        if c == ' ' {
+                            shown = '·';
+                        }
+                        p.hline(cell.left()..=cell.right(), cell.bottom() - 4.0, Stroke::new(2.0, P.error));
+                    } else {
+                        color = P.bg;
+                        p.rect_filled(cursor, CornerRadius::ZERO, P.accent);
+                    }
                 }
                 if shown != ' ' {
                     p.text(Pos2::new(x, cell.center().y), Align2::LEFT_CENTER, shown, font.clone(), color);
@@ -903,12 +892,27 @@ impl App {
         ];
         let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 68.0), Sense::hover());
         let p = ui.painter();
-        section(p, r.left(), r.right(), r.top(), "STATS", P.dim, P.line);
+        section(p, r.left(), r.right(), r.top(), "ПОКАЗАТЕЛИ", P.dim, P.line);
         let cell = r.width() / items.len() as f32;
         for (i, (value, label)) in items.into_iter().enumerate() {
             let x = r.left() + cell * i as f32;
             p.text(Pos2::new(x, r.top() + 22.0), Align2::LEFT_TOP, value, FontId::monospace(24.0), P.text);
             p.text(Pos2::new(x, r.top() + 54.0), Align2::LEFT_TOP, label, FontId::monospace(10.5), P.dim);
+        }
+        if t.done() && !t.typed.is_empty() {
+            let (chart, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 48.0), Sense::hover());
+            let painter = ui.painter();
+            section(painter, chart.left(), chart.right(), chart.top(), "СОВПАДЕНИЯ ПО УЧАСТКАМ ТЕКСТА", P.sub, P.line);
+            let chunk = t.typed.len().div_ceil(32);
+            let count = t.typed.len().div_ceil(chunk);
+            let width = chart.width() / count as f32;
+            for (i, part) in t.typed.chunks(chunk).enumerate() {
+                let start = i * chunk;
+                let matches = part.iter().zip(&t.target[start..]).filter(|(a, b)| a == b).count();
+                let height = 2.0 + 20.0 * matches as f32 / part.len() as f32;
+                let corner = Pos2::new(chart.left() + i as f32 * width, chart.bottom() - height);
+                painter.rect_filled(Rect::from_min_size(corner, Vec2::new(width - 2.0, height)), CornerRadius::ZERO, P.sub);
+            }
         }
     }
 
@@ -1001,7 +1005,7 @@ impl App {
         let shifted = spot.is_some_and(|s| s.shift.is_some());
         let (allowed, all_letters): (Vec<char>, bool) = match self.kind {
             Kind::Lesson(i) => (self.lang.pairs()[i].new.chars().collect(), false),
-            Kind::Phrases(_) | Kind::Mixed(_) => (Vec::new(), true),
+            Kind::Phrases(_) | Kind::Mixed(_) | Kind::Code(_) => (Vec::new(), true),
         };
         let lesson_spots: Vec<KeySpot> = allowed.iter().filter_map(|&c| key_spot(self.lang, c)).collect();
         let rows = self.lang.rows();
@@ -1154,29 +1158,44 @@ impl eframe::App for App {
         }
         fit_zoom(&ctx);
         self.textures(&ctx);
-        if self.screen == Screen::Boot && self.boot.elapsed().as_secs_f32() >= BOOT_LEN {
-            self.go(Screen::Start);
-        }
-        self.handle_input(&ctx);
-        let since = self.shown.elapsed().as_secs_f32() / FADE;
-        if since < 1.0 || self.screen == Screen::Boot {
-            ctx.request_repaint();
-        }
-        if self.screen != Screen::Practice {
-            let frame = egui::Frame::NONE.fill(P.bg);
-            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
-                let full = ui.max_rect();
-                if self.screen == Screen::Boot {
-                    self.splash(ui, full);
+        if self.screen == Screen::History {
+            egui::CentralPanel::default().frame(egui::Frame::NONE.inner_margin(20.0).fill(P.bg)).show(ui, |ui| {
+                ui.heading("Результаты занятий");
+                if ui.button("Назад").clicked() || ctx.input(|i| i.key_pressed(Key::Escape)) {
+                    self.go(Screen::Start);
+                    self.tab = 1;
+                    self.pick = 3;
+                }
+                if self.history.is_empty() {
+                    ui.label("Здесь появятся результаты завершённых занятий.");
                 } else {
-                    self.footer(ui, full);
-                    self.start(ui, full);
-                    if since < 1.0 {
-                        ui.painter().rect_filled(full, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - since));
-                    }
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::Grid::new("history").striped(true).show(ui, |ui| {
+                            for title in ["Занятие", "Язык", "Зн/мин", "Точность, %", "Время, с"] { ui.strong(title); }
+                            ui.end_row();
+                            for row in self.history.lines().rev() {
+                                for cell in row.split('\t').take(5) { ui.label(cell); }
+                                ui.end_row();
+                            }
+                        });
+                    });
                 }
             });
             return;
+        }
+        self.handle_input(&ctx);
+        if self.screen == Screen::Start {
+            let frame = egui::Frame::NONE.fill(P.bg);
+            egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+                let full = ui.max_rect();
+                self.footer(ui, full);
+                self.start(ui, full);
+            });
+            return;
+        }
+        let since = self.shown.elapsed().as_secs_f32() / 0.35;
+        if since < 1.0 {
+            ctx.request_repaint();
         }
         if self.typing() {
             ctx.request_repaint_after(Duration::from_millis(200));
@@ -1212,13 +1231,97 @@ mod tests {
     use super::*;
 
     #[test]
+    fn code_result_survives_reopening_history() {
+        if std::env::var_os("FASTWORD_HISTORY_TEST_CHILD").is_none() {
+            let dir = std::env::temp_dir().join(format!("fastword-history-{}", std::process::id()));
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::code_result_survives_reopening_history"])
+                .env("FASTWORD_HISTORY_TEST_CHILD", "1")
+                .env("XDG_STATE_HOME", &dir)
+                .env("APPDATA", &dir)
+                .status().unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            assert!(result.success());
+            return;
+        }
+        let mut app = App::new(Lang::Ru, Kind::Lesson(0));
+        app.tab = 1;
+        app.pick = 2;
+        app.launch();
+        assert_eq!(app.lang, Lang::En);
+        for c in app.test.target.clone() {
+            app.test.type_char(c, app.lang);
+        }
+        app.record();
+        app.record();
+        let mut reopened = App::new(Lang::En, Kind::Code(false));
+        reopened.pick = 3;
+        reopened.launch();
+        assert!(reopened.screen == Screen::History);
+        assert_eq!(reopened.history.lines().count(), 1);
+        let fields: Vec<_> = reopened.history.trim().split('\t').collect();
+        assert_eq!(fields.len(), 5);
+        assert_eq!(fields[0], "Код");
+        assert_eq!(fields[3], "100");
+    }
+
+
+    #[test]
+    fn logo_flicker_dims_briefly_and_reschedules() {
+        let mut flicker = LogoFlicker::new(Rng(1));
+        let first = flicker.next;
+        assert!((3.5..=8.5).contains(&first));
+        assert_eq!(flicker.color(first - 0.1), P.text);
+        assert_ne!(flicker.color(first + 0.08), P.text);
+        assert_ne!(flicker.color(first + 0.24), P.text);
+        let end = first + LogoFlicker::DURATION;
+        assert_eq!(flicker.color(end + 0.01), P.text);
+        let delay = flicker.next - end;
+        assert!((3.49..=8.51).contains(&delay));
+        assert!((delay - first).abs() > 0.01);
+    }
+
+    #[test]
+    fn welcome_animates_the_title_and_waits_for_enter() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(base_fonts());
+        let dots = ctx.load_texture("dots", dots_image(), egui::TextureOptions::NEAREST);
+        let run = |elapsed, events, title| {
+            let mut started = false;
+            let output = ctx.run_ui(egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(980.0, 640.0))),
+                events,
+                ..Default::default()
+            }, |ui| {
+                started = draw_welcome(ui, &dots, elapsed, P.text);
+            });
+            assert!(output.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == title)
+            }));
+            output.drop_without_applying_deltas();
+            started
+        };
+
+        assert!(!run(0.35, vec![], "F"));
+        assert!(!run(10.0, vec![], "FastWord"));
+        assert!(run(11.0, vec![egui::Event::Key {
+            key: Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }], "FastWord"));
+    }
+
+    #[test]
     fn settings_keep_old_fonts_and_roundtrip_keyboard_options() {
         let old = Settings::parse("size 28\nfont My Font\n");
         assert_eq!(old.size, 28.0);
         assert_eq!(old.font, "My Font");
         assert!(old.show_keyboard);
         assert!(!old.colored_keyboard);
-        let changed = Settings { show_keyboard: false, colored_keyboard: true, ..old };
+        assert!(!old.stop_on_error);
+        let changed = Settings { show_keyboard: false, colored_keyboard: true, stop_on_error: true, ..old };
         assert_eq!(Settings::parse(&changed.encode()), changed);
         assert_eq!(Settings::parse("size NaN\n").size, 20.0);
     }
@@ -1289,12 +1392,135 @@ mod tests {
     }
 }
 
+fn base_fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "IBMPlexMono".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"))),
+    );
+    fonts.font_data.insert(
+        "IBMPlexMonoLight".into(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!("../../assets/fonts/IBMPlexMono-Light.ttf"))),
+    );
+    for family in [egui::FontFamily::Monospace, egui::FontFamily::Proportional] {
+        fonts.families.entry(family).or_default().insert(0, "IBMPlexMonoLight".into());
+    }
+    fonts
+}
+
+struct LogoFlicker {
+    rng: Rng,
+    next: f32,
+}
+
+impl LogoFlicker {
+    const DURATION: f32 = 0.32;
+
+    fn new(mut rng: Rng) -> Self {
+        let next = Self::delay(&mut rng);
+        Self { rng, next }
+    }
+
+    fn delay(rng: &mut Rng) -> f32 {
+        3.5 + rng.below(5001) as f32 / 1000.0
+    }
+
+    fn color(&mut self, elapsed: f32) -> Color32 {
+        let end = self.next + Self::DURATION;
+        if elapsed >= end {
+            self.next = elapsed + Self::delay(&mut self.rng);
+        }
+        if elapsed < self.next {
+            return P.text;
+        }
+        let phase = (elapsed - self.next) / Self::DURATION;
+        let dimming = (phase * std::f32::consts::TAU).sin().abs();
+        P.text.gamma_multiply(1.0 - dimming * 0.32)
+    }
+}
+
+enum Startup {
+    Welcome {
+        dots: egui::TextureHandle,
+        shown: Option<Instant>,
+        flicker: LogoFlicker,
+    },
+    Ready(Box<App>),
+}
+
+fn draw_welcome(ui: &mut egui::Ui, dots: &egui::TextureHandle, elapsed: f32, logo_color: Color32) -> bool {
+    let frame = egui::Frame::NONE.fill(P.bg);
+    egui::CentralPanel::default().frame(frame).show(ui, |ui| {
+        let full = ui.max_rect();
+        let p = ui.painter();
+        let x0 = full.left() + full.width() * 0.30;
+        let background = Rect::from_min_max(Pos2::new(x0, full.top()), full.max);
+        let drift = Vec2::new((elapsed * 0.65).sin() * 0.030, (elapsed * 0.48).sin() * 0.020);
+        let uv = Rect::from_min_max(Pos2::new(0.04, 0.03) + drift, Pos2::new(0.96, 0.97) + drift);
+        p.image(dots.id(), background, uv, Color32::WHITE.gamma_multiply(0.93));
+        let edge = 140.0;
+        for i in 0..28 {
+            let k = i as f32 / 28.0;
+            let band = Rect::from_min_size(
+                Pos2::new(x0 + k * edge, full.top()),
+                Vec2::new(edge / 28.0 + 1.0, full.height()),
+            );
+            p.rect_filled(band, CornerRadius::ZERO, P.bg.gamma_multiply(1.0 - k));
+        }
+
+        let content = Rect::from_center_size(
+            full.center(),
+            Vec2::new((full.width() - 120.0).clamp(1.0, 860.0), full.height().min(420.0)),
+        );
+        let font_size = (content.width() / 5.2).min(118.0);
+        const TITLE: &str = "FastWord";
+        let typed = (((elapsed - 0.3) / 0.16).floor() + 1.0).clamp(0.0, TITLE.len() as f32) as usize;
+        let font = FontId::monospace(font_size);
+        let end = p.text(content.left_center(), Align2::LEFT_CENTER, &TITLE[..typed], font, logo_color);
+        if typed < TITLE.len() && (elapsed * 2.5) as u32 % 2 == 0 {
+            let cursor = Rect::from_center_size(
+                Pos2::new(end.right() + font_size * 0.20, content.center().y),
+                Vec2::new(font_size * 0.30, font_size * 0.81),
+            );
+            p.rect_filled(cursor, CornerRadius::ZERO, P.text);
+        }
+        p.text(content.left_top(), Align2::LEFT_TOP, "ТРЕНАЖЁР СЛЕПОЙ ПЕЧАТИ", FontId::monospace(12.0), P.sub);
+
+        p.text(content.right_bottom(), Align2::RIGHT_BOTTOM, "Enter — меню", FontId::monospace(12.0), P.dim);
+        ui.input(|input| input.key_pressed(Key::Enter))
+    }).inner
+}
+
+impl eframe::App for Startup {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        match self {
+            Self::Welcome { dots, shown, flicker } => {
+                if ui.input(|input| input.key_pressed(Key::Escape)) {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    return;
+                }
+                let elapsed = shown.get_or_insert_with(Instant::now).elapsed().as_secs_f32();
+                if !draw_welcome(ui, dots, elapsed, flicker.color(elapsed)) {
+                    ui.ctx().request_repaint_after(Duration::from_millis(33));
+                    return;
+                }
+                let (lang, kind) = load_gui_state();
+                let mut app = App::new(lang, kind);
+                app.apply_fonts(ui.ctx());
+                *self = Self::Ready(Box::new(app));
+                ui.ctx().request_repaint();
+            }
+            Self::Ready(app) => app.ui(ui, frame),
+        }
+    }
+}
+
 fn main() -> eframe::Result {
-    let (lang, kind) = load_gui_state();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FastWord")
             .with_app_id("fastword-gui")
+            .with_icon(eframe::icon_data::from_png_bytes(include_bytes!("../../assets/icon/fastword.png")).expect("FastWord icon"))
             .with_inner_size([980.0, 640.0])
             .with_min_inner_size([760.0, 600.0]),
         ..Default::default()
@@ -1302,11 +1528,15 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "FastWord",
         options,
-        Box::new(move |cc| {
+        Box::new(|cc| {
             cc.egui_ctx.set_visuals(egui::Visuals::dark());
-            let mut app = App::new(lang, kind);
-            app.apply_fonts(&cc.egui_ctx);
-            Ok(Box::new(app))
+            cc.egui_ctx.set_fonts(base_fonts());
+            let dots = cc.egui_ctx.load_texture("dots", dots_image(), egui::TextureOptions::NEAREST);
+            Ok(Box::new(Startup::Welcome {
+                dots,
+                shown: None,
+                flicker: LogoFlicker::new(Rng::new()),
+            }))
         }),
     )
 }

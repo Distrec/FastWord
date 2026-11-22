@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FastWord
+GenericName=Тренажёр слепой печати
+Exec=fastword-gui
+Icon=fastword-gui
+Terminal=false
+Categories=Education;
+StartupWMClass=fastword-gui

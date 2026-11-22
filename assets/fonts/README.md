@@ -1,2 +1,1 @@
-IBMPlexMono-Regular.ttf — IBM Plex Mono (https://github.com/IBM/plex), SIL Open Font License 1.1, текст лицензии — IBMPlexMono-LICENSE.txt.
-Шрифт окна FastWord, выбран в ~/Dev/Design/Стиль.md (правило Т1).
+IBM Plex Mono Regular и Light используются в интерфейсе FastWord. Исходные шрифты — https://github.com/IBM/plex. Лицензия SIL Open Font License 1.1 приведена в IBMPlexMono-LICENSE.txt.
