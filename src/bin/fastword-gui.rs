@@ -1356,15 +1356,15 @@ impl App {
                 (vec![Chip::Arrow(up), Chip::Arrow(down)], "выбор"),
                 (vec![Chip::Text("Enter")], if self.tab == 2 { "изменить" } else { "начать" }),
                 (vec![Chip::Text("Tab")], "раскладка"),
-                (vec![Chip::Text("Backspace")], "назад"), (vec![Chip::Text("Esc")], "выход"),
+                (vec![Chip::Text("Esc")], "назад"),
             ]
         } else if self.kind.endless() {
-            vec![(vec![Chip::Arrow(up)], "заново"), (vec![Chip::Text("F1")], "меню"), (vec![Chip::Text("Esc")], "выход")]
+            vec![(vec![Chip::Arrow(up)], "заново"), (vec![Chip::Text("Esc")], "назад")]
         } else {
             vec![
                 (vec![Chip::Arrow(up)], "другие слова"),
                 (vec![Chip::Text("Enter")], "ещё раз"),
-                (vec![Chip::Text("F1")], "меню"), (vec![Chip::Text("Esc")], "выход"),
+                (vec![Chip::Text("Esc")], "назад"),
             ]
         };
         let cell = bar.width() / items.len() as f32;
@@ -1801,7 +1801,23 @@ fn draw_welcome(ui: &mut egui::Ui, dots: &egui::TextureHandle, elapsed: f32, log
 impl eframe::App for Startup {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         if ui.input(|input| input.key_pressed(Key::Escape)) {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            match self {
+                Self::Welcome { .. } => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                Self::Ready(app) => match app.screen {
+                    Screen::Cards => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                    Screen::Start if app.choosing_language => {
+                        app.choosing_language = false;
+                        app.pick = 2;
+                    }
+                    Screen::Start => app.open_cards(),
+                    Screen::Practice => app.go(Screen::Start),
+                    Screen::History => {
+                        app.go(Screen::Start);
+                        app.tab = 1;
+                        app.pick = 3;
+                    }
+                },
+            }
             return;
         }
         match self {
