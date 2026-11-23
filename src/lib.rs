@@ -267,12 +267,12 @@ pub enum Kind {
     Lesson(usize),
     Phrases(bool),
     Mixed(bool),
-    Code(bool),
+    Code(CodeLanguage, bool),
 }
 
 impl Kind {
     pub fn endless(self) -> bool {
-        matches!(self, Kind::Phrases(true) | Kind::Mixed(true) | Kind::Code(true))
+        matches!(self, Kind::Phrases(true) | Kind::Mixed(true) | Kind::Code(_, true))
     }
 }
 
@@ -285,9 +285,10 @@ pub fn load_gui_state() -> (Lang, Kind) {
     let lang = if parts.next() == Some("en") { Lang::En } else { Lang::Ru };
     let tag = parts.next();
     let endless = parts.next() == Some("inf");
+    let saved_language = parts.next();
     let kind = match tag {
         Some("phrases") => Kind::Phrases(endless),
-        Some("code") => Kind::Code(endless),
+        Some("code") => Kind::Code(CodeLanguage::ALL.into_iter().find(|l| Some(l.name()) == saved_language).unwrap_or(CodeLanguage::Rust), endless),
         Some("mixed") => Kind::Mixed(endless),
         s => Kind::Lesson(s.and_then(|s| s.parse::<usize>().ok()).filter(|&n| n < PAIR_COUNT).unwrap_or(0)),
     };
@@ -298,7 +299,7 @@ pub fn save_gui_state(lang: Lang, kind: Kind) {
     let kind = match kind {
         Kind::Lesson(i) => i.to_string(),
         Kind::Phrases(e) => format!("phrases {}", if e { "inf" } else { "fin" }),
-        Kind::Code(e) => format!("code {}", if e { "inf" } else { "fin" }),
+        Kind::Code(language, e) => format!("code {} {}", if e { "inf" } else { "fin" }, language.name()),
         Kind::Mixed(e) => format!("mixed {}", if e { "inf" } else { "fin" }),
     };
     write_file(state_file("gui"), format!("{} {kind}\n", lang_tag(lang)));
@@ -546,22 +547,35 @@ pub struct Test {
     pub mix: Option<Mix>,
     pub phrases: bool,
     pub blend: bool,
-    pub code: bool,
+    pub code: Option<CodeLanguage>,
 }
 
-fn code_sample(rng: &mut Rng) -> Vec<char> {
-    let samples = [
-        "values = [n * n for n in range(8)]",
-        "total = sum(x for x in scores if x > 0)",
-        "names = sorted(items, key=str.lower)",
-        "let sum: i32 = values.iter().sum();",
-        "let pair = (width + gap, height);",
-        "let label = format!(\"{} px\", size);",
-        "const names = items.map(item => item.name);",
-        "const even = nums.filter(n => n % 2 === 0);",
-        "const point = { x: 12, y: 24 };",
-    ];
-    samples[rng.below(samples.len())].chars().collect()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CodeLanguage { Rust, JavaScript, Java, CSharp, C }
+
+impl CodeLanguage {
+    pub const ALL: [Self; 5] = [Self::Rust, Self::JavaScript, Self::Java, Self::CSharp, Self::C];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rust => "Rust",
+            Self::JavaScript => "JavaScript",
+            Self::Java => "Java",
+            Self::CSharp => "C#",
+            Self::C => "C",
+        }
+    }
+
+    fn sample(self, rng: &mut Rng) -> Vec<char> {
+        let samples = match self {
+            Self::Rust => ["let sum: i32 = values.iter().sum();", "let pair = (width + gap, height);", "let valid = items.iter().all(|x| *x > 0);"],
+            Self::JavaScript => ["const names = items.map(item => item.name);", "const even = nums.filter(n => n % 2 === 0);", "const point = { x: 12, y: 24 };"],
+            Self::Java => ["List<String> names = new ArrayList<>();", "int size = values.length;", "String label = String.valueOf(count);"],
+            Self::CSharp => ["var names = items.Select(x => x.Name);", "int count = values.Length;", "string label = count.ToString();"],
+            Self::C => ["size_t count = sizeof(values) / sizeof(values[0]);", "int *next = &values[i];", "struct point p = { .x = 12, .y = 24 };"],
+        };
+        samples[rng.below(samples.len())].chars().collect()
+    }
 }
 
 impl Test {
@@ -585,9 +599,9 @@ impl Test {
                 t.blend = true;
                 t
             }
-            Kind::Code(endless) => {
-                let mut test = Test::new(code_sample(rng));
-                test.code = true;
+            Kind::Code(language, endless) => {
+                let mut test = Test::new(language.sample(rng));
+                test.code = Some(language);
                 test.endless = endless;
                 test
             }
@@ -618,12 +632,12 @@ impl Test {
     pub fn top_up(&mut self, lang: Lang, rng: &mut Rng) {
         if self.endless && self.target.len() - self.typed.len().min(self.target.len()) < ENDLESS_AHEAD {
             self.target.push(' ');
-            let more = match self.mix {
-                _ if self.code => code_sample(rng),
+            let more = match (self.code, self.mix) {
+                (Some(language), _) => language.sample(rng),
                 _ if self.phrases => make_phrases(lang, rng),
                 _ if self.blend => make_blend(lang, rng),
-                Some(mix) => make_endless(lang, mix, rng),
-                None => make_text(lang, ENDLESS, rng),
+                (_, Some(mix)) => make_endless(lang, mix, rng),
+                (_, None) => make_text(lang, ENDLESS, rng),
             };
             self.target.extend(more);
         }
@@ -649,7 +663,7 @@ impl Test {
             mix: None,
             phrases: false,
             blend: false,
-            code: false,
+            code: None,
         }
     }
 
@@ -931,7 +945,7 @@ mod tests {
         assert_eq!(ru[2], Some(b(150)));
         assert_eq!(ru[0], None);
         assert_eq!(load_results(Lang::En)[2], Some(b(40)));
-        for (lang, kind) in [(Lang::En, Kind::Lesson(0)), (Lang::Ru, Kind::Lesson(7)), (Lang::Ru, Kind::Phrases(false)), (Lang::En, Kind::Mixed(true)), (Lang::Ru, Kind::Phrases(true)), (Lang::En, Kind::Code(true)), (Lang::En, Kind::Code(false))] {
+        for (lang, kind) in [(Lang::En, Kind::Lesson(0)), (Lang::Ru, Kind::Lesson(7)), (Lang::Ru, Kind::Phrases(false)), (Lang::En, Kind::Mixed(true)), (Lang::Ru, Kind::Phrases(true)), (Lang::En, Kind::Code(CodeLanguage::Java, true)), (Lang::En, Kind::Code(CodeLanguage::CSharp, false))] {
             save_gui_state(lang, kind);
             assert_eq!(load_gui_state(), (lang, kind));
         }
@@ -941,18 +955,21 @@ mod tests {
     #[test]
     fn code_practice_finishes_or_extends_with_printable_code() {
         let mut rng = Rng(17);
-        for endless in [false, true] {
-            let mut test = Test::for_kind(Lang::En, Kind::Code(endless), &mut rng);
-            let sample = test.target.clone();
-            assert!(sample.iter().any(|c| c.is_ascii_punctuation()));
-            for c in &sample {
-                assert!(c.is_ascii_graphic() || *c == ' ');
-                test.type_char_with_stop(*c, Lang::En, true);
-                test.top_up(Lang::En, &mut rng);
+        for language in CodeLanguage::ALL {
+            for endless in [false, true] {
+                let mut test = Test::for_kind(Lang::En, Kind::Code(language, endless), &mut rng);
+                assert_eq!(test.code, Some(language));
+                let sample = test.target.clone();
+                assert!(sample.iter().any(|c| c.is_ascii_punctuation()));
+                for c in &sample {
+                    assert!(c.is_ascii_graphic() || *c == ' ');
+                    test.type_char_with_stop(*c, Lang::En, true);
+                    test.top_up(Lang::En, &mut rng);
+                }
+                assert_eq!(test.done(), !endless);
+                assert_eq!(test.target.len() > sample.len(), endless);
+                assert_eq!(test.mistakes, 0);
             }
-            assert_eq!(test.done(), !endless);
-            assert_eq!(test.target.len() > sample.len(), endless);
-            assert_eq!(test.mistakes, 0);
         }
     }
 
