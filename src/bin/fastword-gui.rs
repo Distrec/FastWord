@@ -680,19 +680,37 @@ impl App {
         let area = Rect::from_min_max(Pos2::new(full.left(), full.top() + 56.0), Pos2::new(full.right(), full.bottom() - FOOTER));
         let box_w = (area.width() - 2.0 * MARGIN).min(780.0);
         let box_h = 420.0_f32.min(area.height() - 24.0);
-        let frame = Rect::from_center_size(area.center(), Vec2::new(box_w, box_h));
+        let shift = ((area.width() - box_w) * 0.5 - MARGIN).clamp(0.0, 80.0);
+        let frame = Rect::from_center_size(area.center() - Vec2::new(shift, 0.0), Vec2::new(box_w, box_h));
         let titles = ["Уроки", "Тренировки", "Настройки"];
         let numbers = ["01", "02", "03"];
         let left_w = frame.width() * 0.39;
         let left = frame.left();
-        let top = frame.top();
-        let list = Rect::from_min_max(Pos2::new(left + left_w + 28.0, top), frame.max);
+        let top = area.top() - 8.0;
+        let list = Rect::from_min_max(
+            Pos2::new(left + left_w + 28.0, area.center().y - 150.0),
+            frame.max,
+        );
         let rule = Stroke::new(1.0, P.line);
-        p.hline(frame.x_range(), top, rule);
+        p.hline(left..=left + left_w, top, rule);
         p.text(Pos2::new(left, top + 9.0), Align2::LEFT_TOP, titles[self.tab],
             FontId::proportional((left_w * 0.162).min(48.0)), P.text);
         p.text(Pos2::new(left - 2.0, top + 62.0), Align2::LEFT_TOP, numbers[self.tab],
             FontId::monospace(88.0), P.text);
+        let detail_x = left + left_w - 102.0;
+        let detail_y = top + 85.0;
+        let detail = match self.tab {
+            0 => ("RU / EN", "8 УРОКОВ", "ПАРЫ КЛАВИШ"),
+            1 => ("RU / EN", "4 РЕЖИМА", "ТЕКСТ / КОД"),
+            _ => ("RU / EN", "6 ПУНКТОВ", "ШРИФТ / ВВОД"),
+        };
+        p.text(Pos2::new(detail_x, detail_y), Align2::LEFT_TOP, detail.0,
+            FontId::monospace(10.0), P.sub);
+        p.hline(detail_x..=left + left_w, detail_y + 21.0, rule);
+        p.text(Pos2::new(detail_x, detail_y + 27.0), Align2::LEFT_TOP, detail.1,
+            FontId::monospace(10.0), P.dim);
+        p.text(Pos2::new(detail_x, detail_y + 44.0), Align2::LEFT_TOP, detail.2,
+            FontId::monospace(9.0), P.sub);
         let switch_y = top + 192.0;
         p.hline(left..=left + left_w, switch_y, rule);
         let mut new_tab = None;
